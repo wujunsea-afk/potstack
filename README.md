@@ -1,4 +1,4 @@
-# PotStack (沙箱集成栈) - Windows All-in-One
+# PotStack (沙箱集成栈)
 
 PotStack 是一个为 Windows 环境设计的集成后端服务，旨在提供零依赖的 Git 托管、应用沙箱运行及自动编排能力。
 
