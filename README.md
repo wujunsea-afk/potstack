@@ -6,16 +6,14 @@ PotStack 是一个为 Windows 环境设计的集成后端服务，旨在提供�
 
 - **单进程架构 (AIO)**: 整合了路由转发、Git 引擎、沙箱管理和 Loader 编排。
 - **Pure Go Git 引擎**: 基于 `go-git` 实现，无需在 Windows 上安装 Git 客户端。
-- **Windows Job Objects 沙箱**: 提供高性能的进程资源限制与隔离。
 - **Gogs 兼容 API**: 完美对接现有的 Loader 和自动化脚本。
-- **零数据库 (Zero-DB)**: 物理痕迹驱动，状态即文件。
 
 ## 快速开始
 
 ### 环境变量
 - `POTSTACK_TOKEN`: 管理 API 和 Git 传输所需的鉴权令牌（Basic Auth）。
 - `POTSTACK_REPO_ROOT`: 仓库物理存储根目录。
-- `POTSTACK_HTTP_PORT`: HTTP 服务端口（默认：8081）。
+- `POTSTACK_HTTP_PORT`: HTTP 服务端口（默认：61080）。
 
 ### 编译运行
 
