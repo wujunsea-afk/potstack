@@ -115,13 +115,24 @@ func runService(ctx context.Context) error {
 	}
 
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if config.EnableHTTPS {
+			// --- 启动 HTTPS 服务 ---
+			log.Printf("HTTPS service enabled. Listening on %s", srv.Addr)
+			err = srv.ListenAndServeTLS(config.CertFile, config.KeyFile)
+		} else {
+			// --- 启动 HTTP 服务 (维持现状) ---
+			log.Printf("HTTP service enabled. Listening on %s", srv.Addr)
+			err = srv.ListenAndServe()
+		}
+		
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %s\n", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("Stopping HTTP service...")
+	log.Println("Stopping service...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()

@@ -14,6 +14,24 @@ PotStack 是一个为 Windows 环境设计的集成后端服务，旨在提供�
 - `POTSTACK_TOKEN`: 管理 API 和 Git 传输所需的鉴权令牌（Basic Auth）。
 - `POTSTACK_REPO_ROOT`: 仓库物理存储根目录。
 - `POTSTACK_HTTP_PORT`: HTTP 服务端口（默认：61080）。
+- `POTSTACK_ENABLE_HTTPS`: 是否启用 HTTPS (值为 `true` 时启用)。
+- `POTSTACK_CERT_FILE`: TLS 证书文件路径 (默认为 `./cert.pem`)。
+- `POTSTACK_KEY_FILE`: TLS 私钥文件路径 (默认为 `./key.pem`)。
+
+### 启用 HTTPS (开发环境)
+
+1. **生成本地证书** (需要 [mkcert](https://github.com/FiloSottile/mkcert))
+
+   ```bash
+   # 生成证书和私钥
+   mkcert -cert-file cert.pem -key-file key.pem localhost 127.0.0.1
+   ```
+
+2. **启动 HTTPS 服务**
+
+   ```bash
+   POTSTACK_ENABLE_HTTPS=true go run main.go
+   ```
 
 ### 编译运行
 

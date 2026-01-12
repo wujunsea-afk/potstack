@@ -15,23 +15,34 @@ var (
 
 	// LogFile path for logging
 	LogFile string
+	
+	// EnableHTTPS controls whether HTTPS is enabled
+	EnableHTTPS bool
+	
+	// CertFile specifies the path to the TLS certificate file
+	CertFile string
+	
+	// KeyFile specifies the path to the TLS private key file
+	KeyFile string
 )
 
 func init() {
-	RepoRoot = os.Getenv("POTSTACK_REPO_ROOT")
-	if RepoRoot == "" {
-		RepoRoot = "data"
-	}
-
-	HTTPPort = os.Getenv("POTSTACK_HTTP_PORT")
-	if HTTPPort == "" {
-		HTTPPort = "61080"
-	}
-
+	RepoRoot = getEnv("POTSTACK_REPO_ROOT", "data")
+	HTTPPort = getEnv("POTSTACK_HTTP_PORT", "61080")
 	PotStackToken = os.Getenv("POTSTACK_TOKEN")
-
-	LogFile = os.Getenv("POTSTACK_LOG_FILE")
-	if LogFile == "" {
-		LogFile = "./log/potstack.log"
-	}
+	LogFile = getEnv("POTSTACK_LOG_FILE", "./log/potstack.log")
+	
+	// HTTPS Configuration
+	EnableHTTPS = getEnv("POTSTACK_ENABLE_HTTPS", "false") == "true"
+	CertFile = getEnv("POTSTACK_CERT_FILE", "./cert.pem")
+	KeyFile = getEnv("POTSTACK_KEY_FILE", "./key.pem")
 }
+
+// getEnv fetches an environment variable or returns a default value.
+func getEnv(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
+}
+
