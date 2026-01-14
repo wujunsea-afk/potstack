@@ -109,7 +109,7 @@ func ResourceProcessor() gin.HandlerFunc {
 			owner := parts[0]
 			repoName := parts[1]
 			filePathInRepo := parts[2]
-			repoPath := filepath.Join(config.RepoRoot, owner, repoName+".git")
+			repoPath := filepath.Join(config.RepoDir, owner, repoName+".git")
 
 			serveRepoFile(c, repoPath, filePathInRepo)
 
@@ -129,7 +129,7 @@ func ResourceProcessor() gin.HandlerFunc {
 			filePathInDataDir := parts[2]
 
 			// Base path of the 'data' directory inside the bare repo.
-			dataRoot := filepath.Join(config.RepoRoot, owner, repoName+".git", "data")
+			dataRoot := filepath.Join(config.RepoDir, owner, repoName+".git", "data")
 
 			// Security: Join and clean the path to prevent path traversal attacks.
 			fullPath := filepath.Join(dataRoot, filePathInDataDir)
@@ -168,7 +168,7 @@ func CDNProcessor() gin.HandlerFunc {
 		owner := "biz.cdn"
 		repoName := parts[0]
 		filePathInRepo := parts[1]
-		repoPath := filepath.Join(config.RepoRoot, owner, repoName+".git")
+		repoPath := filepath.Join(config.RepoDir, owner, repoName+".git")
 
 		serveRepoFile(c, repoPath, filePathInRepo)
 	}

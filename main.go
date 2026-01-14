@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,39 +15,41 @@ import (
 	"potstack/config"
 	"potstack/internal/api"
 	"potstack/internal/auth"
+	"potstack/internal/db"
 	"potstack/internal/git"
+	pothttps "potstack/internal/https"
+	"potstack/internal/loader"
 	"potstack/internal/router"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	// 初始化日志
-	if config.LogFile != "" {
-		logDir := filepath.Dir(config.LogFile)
-		if err := os.MkdirAll(logDir, 0755); err != nil {
-			log.Fatalf("Failed to create log directory %s: %v", logDir, err)
-		}
+	// 确保必要目录存在
+	initDirectories()
 
-		logFile, err := os.OpenFile(config.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-		if err != nil {
-			log.Fatalf("Failed to open log file: %v", err)
-		}
-		// 诊断：直接将日志写入文件，而不是同时写入标准错误输出
-		log.SetOutput(logFile)
-		gin.DefaultWriter = logFile
-		gin.DefaultErrorWriter = logFile
-	}
+	// 初始化日志
+	initLogging()
 
 	log.Println("Starting PotStack One...")
 
-	// 1. 创建用于优雅退出的 Context
+	// 初始化 HTTPS 配置
+	templateFile := pothttps.GetTemplateFile()
+	if err := pothttps.Init(config.HTTPSConfig, templateFile); err != nil {
+		log.Printf("Warning: failed to init HTTPS config: %v", err)
+	}
+
+	// 启动配置热重载
+	pothttps.StartWatcher(30 * time.Second)
+
+	// 初始化数据库（延迟初始化，等待 potstack/repo.git 仓库存在）
+	initDatabase()
+
+	// 创建用于优雅退出的 Context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	log.Printf("PotStack listening on port: %s", config.HTTPPort)
-
-	// 2. 启动 HTTP 服务 (Goroutine A)
+	// 启动服务
 	srvErrCh := make(chan error, 1)
 	go func() {
 		if err := runService(ctx); err != nil {
@@ -53,7 +57,10 @@ func main() {
 		}
 	}()
 
-	// 3. 信号处理
+	// 启动 Loader 初始化（异步，等待服务就绪）
+	go initLoader()
+
+	// 信号处理
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -66,11 +73,60 @@ func main() {
 
 	cancel()
 
+	// 关闭数据库
+	db.Close()
+
 	// 等待协程清理资源
 	<-time.After(2 * time.Second)
-	log.Println("Shutdown timeout (or explicit wait).")
-
 	log.Println("PotStack exit.")
+}
+
+func initDirectories() {
+	// 创建必要的目录
+	dirs := []string{
+		config.RepoDir,               // 仓库目录
+		config.CertsDir,              // 证书目录
+		filepath.Dir(config.LogFile), // 日志目录
+	}
+
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Printf("Warning: failed to create directory %s: %v", dir, err)
+		}
+	}
+}
+
+func initLogging() {
+	if config.LogFile == "" {
+		return
+	}
+
+	logFile, err := os.OpenFile(config.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Printf("Warning: failed to open log file: %v, using stdout", err)
+		return
+	}
+
+	log.SetOutput(logFile)
+	gin.DefaultWriter = logFile
+	gin.DefaultErrorWriter = logFile
+}
+
+func initDatabase() {
+	// 确保 potstack/repo.git/data 目录存在（直接创建，不等待 Loader）
+	dbDir := filepath.Join(config.RepoDir, "potstack", "repo.git", "data")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		log.Printf("Warning: failed to create db directory: %v", err)
+		return
+	}
+
+	// 初始化数据库
+	if err := db.Init(config.RepoDir); err != nil {
+		log.Printf("Warning: failed to init database: %v", err)
+		return
+	}
+
+	log.Println("Database initialized")
 }
 
 func runService(ctx context.Context) error {
@@ -79,57 +135,91 @@ func runService(ctx context.Context) error {
 	// API 路由组
 	v1 := r.Group("/api/v1")
 	{
-		// 管理员用户管理 (受保护)
+		// 管理员接口 (受保护)
 		admin := v1.Group("/admin")
 		admin.Use(auth.TokenAuthMiddleware())
 		{
 			admin.POST("/users", api.CreateUserHandler)
 			admin.DELETE("/users/:username", api.DeleteUserHandler)
 			admin.POST("/users/:username/repos", api.CreateRepoHandler)
-			admin.POST("/users/:username/orgs", api.CreateOrgHandler)
+
+			// 证书管理
+			admin.GET("/certs/info", api.CertInfoHandler)
+			admin.POST("/certs/renew", api.CertRenewHandler)
 		}
 
-		// 组织管理
-		v1.DELETE("/orgs/:orgname", api.DeleteOrgHandler)
-
 		// 仓库管理
-		v1.GET("/repos/:owner/:repo", api.GetRepoHandler)
-		v1.DELETE("/repos/:username/:reponame", api.DeleteRepoHandler)
+		repos := v1.Group("/repos")
+		repos.Use(auth.TokenAuthMiddleware())
+		{
+			repos.GET("/:owner/:repo", api.GetRepoHandler)
+			repos.DELETE("/:owner/:repo", api.DeleteRepoHandler)
+
+			// 协作者管理 (Gogs 兼容)
+			repos.GET("/:owner/:repo/collaborators", api.ListCollaboratorsHandler)
+			repos.GET("/:owner/:repo/collaborators/:collaborator", api.CheckCollaboratorHandler)
+			repos.PUT("/:owner/:repo/collaborators/:collaborator", api.AddCollaboratorHandler)
+			repos.DELETE("/:owner/:repo/collaborators/:collaborator", api.RemoveCollaboratorHandler)
+		}
 	}
 
 	// 统一资源路由
 	r.GET("/uri/*path", auth.TokenAuthMiddleware(), router.ResourceProcessor())
 	r.Any("/att/*path", auth.TokenAuthMiddleware(), router.ATTProcessor())
-	r.GET("/cdn/*path", router.CDNProcessor()) // 公开
+	r.GET("/cdn/*path", router.CDNProcessor())
 	r.Any("/web/*path", router.WebProcessor())
 
 	// Git Smart HTTP 协议 (受保护)
 	r.Any("/:owner/:reponame/*action", auth.TokenAuthMiddleware(), git.SmartHTTPServer())
 
-	// 内部路由 (示例)
+	// 健康检查
 	r.GET("/health", api.HealthCheckHandler)
 
-	srv := &http.Server{
-		Addr:    ":" + config.HTTPPort,
-		Handler: r,
+	// 设置 TLS
+	certManager := pothttps.NewManager()
+	tlsConfig, err := certManager.Setup()
+	if err != nil {
+		log.Printf("TLS setup failed: %v, falling back to HTTP", err)
+		tlsConfig = nil
 	}
 
-	go func() {
-		var err error
-		if config.EnableHTTPS {
-			// --- 启动 HTTPS 服务 ---
-			log.Printf("HTTPS service enabled. Listening on %s", srv.Addr)
-			err = srv.ListenAndServeTLS(config.CertFile, config.KeyFile)
-		} else {
-			// --- 启动 HTTP 服务 (维持现状) ---
-			log.Printf("HTTP service enabled. Listening on %s", srv.Addr)
-			err = srv.ListenAndServe()
+	var srv *http.Server
+
+	if tlsConfig != nil {
+		// HTTPS 模式
+		srv = &http.Server{
+			Addr:      ":" + config.HTTPPort,
+			Handler:   r,
+			TLSConfig: tlsConfig,
 		}
-		
-		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %s\n", err)
+		log.Printf("HTTPS listening on :%s", config.HTTPPort)
+
+		// 启动证书热重载
+		certManager.StartCertWatcher(30 * time.Second)
+
+		// 启动定时续签检查（每 12 小时检查一次）
+		// certManager.StartRenewalChecker(12 * time.Hour)
+		certManager.StartRenewalChecker(1 * time.Minute) // 测试用
+
+		go func() {
+			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("HTTPS server error: %v", err)
+			}
+		}()
+	} else {
+		// HTTP 模式
+		srv = &http.Server{
+			Addr:    ":" + config.HTTPPort,
+			Handler: r,
 		}
-	}()
+		log.Printf("HTTP listening on :%s", config.HTTPPort)
+
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("HTTP server error: %v", err)
+			}
+		}()
+	}
 
 	<-ctx.Done()
 	log.Println("Stopping service...")
@@ -137,4 +227,50 @@ func runService(ctx context.Context) error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// initLoader 初始化 Loader 模块
+func initLoader() {
+	// 构建服务 URL（内部通信）
+	scheme := "http"
+	if pothttps.IsHTTPS() {
+		scheme = "https"
+	}
+	serviceURL := fmt.Sprintf("%s://localhost:%s", scheme, config.HTTPPort)
+
+	// 自定义 HTTP Client 以跳过 TLS 验证（仅用于本地 Loader）
+	httpClient := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	// 等待服务就绪
+	log.Println("Loader: waiting for service to be ready...")
+	for i := 0; i < 30; i++ {
+		resp, err := httpClient.Get(serviceURL + "/health")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			log.Println("Loader: service is ready")
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	// 创建 Loader 配置
+	loaderCfg := &loader.Config{
+		PotStackURL:  serviceURL,
+		Token:        config.PotStackToken,
+		BasePackPath: filepath.Join(config.RepoRoot, "potstack-base.zip"),
+		HTTPClient:   httpClient, // 需要让 Loader 支持自定义 Client
+	}
+
+	// 执行初始化
+	l := loader.New(loaderCfg)
+	if err := l.Initialize(); err != nil {
+		log.Fatalf("Loader: initialization failed: %v", err)
+	}
+
+	log.Println("Loader: initialization completed")
 }

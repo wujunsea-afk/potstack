@@ -35,7 +35,7 @@ func SmartHTTPServer() gin.HandlerFunc {
 			return
 		}
 
-		repoPath := filepath.Join(config.RepoRoot, owner, reponame)
+		repoPath := filepath.Join(config.RepoDir, owner, reponame)
 		if _, err := os.Stat(repoPath); err != nil {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
@@ -93,7 +93,9 @@ func handleInfoRefs(c *gin.Context, repoPath string) {
 		return nil
 	})
 
-	caps := "side-band-64k ofs-delta object-format=sha1 agent=go-git"
+	// 暂时禁用 side-band-64k 以避免 receive-pack 协议错误
+	// caps := "side-band-64k ofs-delta object-format=sha1 agent=go-git"
+	caps := "ofs-delta object-format=sha1 agent=go-git"
 
 	if len(refList) == 0 {
 		c.Writer.WriteString(pkt(fmt.Sprintf("%040d\x00%s\n", 0, caps)))
