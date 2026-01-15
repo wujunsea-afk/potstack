@@ -55,7 +55,7 @@ if [ -d "$COMPONENTS_ROOT" ]; then
             # 例如: components/potstack -> ../components/potstack
             echo "  - path: \"../$dir\"" >> "$OUTPUT_DIR/batch.yaml"
             echo "Found component: $dir"
-            ((FOUND_COUNT++))
+            FOUND_COUNT=$((FOUND_COUNT + 1))
         fi
     done
 else
