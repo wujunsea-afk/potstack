@@ -1,0 +1,17 @@
+title: "My Sandbox"
+version: "1.0.0"
+owner: "potstack"
+potname: "keeper"
+
+# 沙箱类型：exe 或 static
+type: "exe"
+
+# static 类型专用：静态文件根目录（相对于仓库根目录）
+# root: "public"
+
+# 环境变量（exe 类型专用）
+env:
+  - name: APP_MODE
+    value: "dev"
+  - name: DB_HOST
+    value: "192.168.1.10"

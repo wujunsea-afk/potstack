@@ -1,0 +1,7 @@
+# 运行时状态配置（由 Keeper 自动管理）
+target_status: running
+
+runtime:
+  pid: 12345
+  port: 8080
+  start_time: "2026-01-15T10:00:00Z"

@@ -1,4 +1,4 @@
-package router
+package resource
 
 import (
 	"fmt"
@@ -189,3 +189,82 @@ func ATTProcessor() gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{"message": "ATT operation not yet implemented"})
 	}
 }
+
+// NewStaticHandler 返回一个 http.Handler，从指定仓库的 root 目录下服务静态文件
+// 直接从 Git 仓库的 HEAD commit 读取文件
+func NewStaticHandler(repoRoot, org, name, root string) http.Handler {
+	repoPath := filepath.Join(repoRoot, org, fmt.Sprintf("%s.git", name))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 获取请求的文件路径，拼接 root 前缀
+		reqPath := strings.TrimPrefix(r.URL.Path, "/")
+		filePathInRepo := filepath.Join(root, reqPath)
+
+		// 使用 go-git 从仓库读取文件
+		serveRepoFileHTTP(w, r, repoPath, filePathInRepo)
+	})
+}
+
+// serveRepoFileHTTP 是 serveRepoFile 的 http.Handler 版本
+func serveRepoFileHTTP(w http.ResponseWriter, r *http.Request, repoPath, filePathInRepo string) {
+	// 1. Open the bare repository
+	repo, err := git.PlainOpen(repoPath)
+	if err != nil {
+		if err == git.ErrRepositoryNotExists {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Get HEAD reference
+	headRef, err := repo.Head()
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// 3. Get commit
+	commit, err := repo.CommitObject(headRef.Hash())
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// 4. Get tree
+	tree, err := commit.Tree()
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// 5. Find file
+	file, err := tree.File(filePathInRepo)
+	if err != nil {
+		if err == object.ErrFileNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// 6. Get reader
+	reader, err := file.Reader()
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	defer reader.Close()
+
+	// 7. Serve content
+	contentType := mime.TypeByExtension(filepath.Ext(file.Name))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", file.Size))
+	io.Copy(w, reader)
+}
+

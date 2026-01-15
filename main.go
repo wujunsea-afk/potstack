@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,7 +16,9 @@ import (
 	"potstack/internal/db"
 	"potstack/internal/git"
 	pothttps "potstack/internal/https"
+	"potstack/internal/keeper"
 	"potstack/internal/loader"
+	"potstack/internal/resource"
 	"potstack/internal/router"
 	"potstack/internal/service"
 
@@ -52,6 +51,12 @@ func main() {
 	userService := service.NewUserService()
 	repoService := service.NewRepoService()
 
+	// 初始化动态路由器
+	dynamicRouter := router.NewRouter(config.RepoDir)
+
+	// 初始化 Keeper（Sandbox 管理器）
+	sandboxManager := keeper.NewManager(config.RepoDir, dynamicRouter)
+
 	// 创建用于优雅退出的 Context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -59,13 +64,19 @@ func main() {
 	// 启动服务
 	srvErrCh := make(chan error, 1)
 	go func() {
-		if err := runService(ctx, userService, repoService); err != nil {
+		if err := runService(ctx, userService, repoService, dynamicRouter); err != nil {
 			srvErrCh <- err
 		}
 	}()
 
 	// 启动 Loader 初始化（异步，等待服务就绪）
-	go initLoader(userService, repoService)
+	loaderDone := loader.StartAsync(userService, repoService, sandboxManager)
+
+	// 等待 Loader 完成后启动 Keeper
+	go func() {
+		<-loaderDone
+		sandboxManager.StartKeeper()
+	}()
 
 	// 信号处理
 	sigCh := make(chan os.Signal, 1)
@@ -129,58 +140,45 @@ func initDatabase() {
 
 	// 初始化数据库
 	if err := db.Init(config.RepoDir); err != nil {
-		log.Fatalf("Fatal: failed to init database: %v", err)
+		log.Printf("Warning: failed to init database: %v", err)
+		return
 	}
 
 	log.Println("Database initialized")
 }
 
-func runService(ctx context.Context, us service.IUserService, rs service.IRepoService) error {
+func runService(ctx context.Context, us service.IUserService, rs service.IRepoService, dynamicRouter *router.Router) error {
 	r := gin.Default()
-	server := api.NewServer(us, rs)
+	_ = api.NewServer(us, rs) // 保留以备后用
 
-	// API 路由组
-	v1 := r.Group("/api/v1")
-	{
-		// 管理员接口 (受保护)
-		admin := v1.Group("/admin")
-		admin.Use(auth.TokenAuthMiddleware())
-		{
-			admin.POST("/users", server.CreateUserHandler)
-			admin.DELETE("/users/:username", server.DeleteUserHandler)
-			admin.POST("/users/:username/repos", server.CreateRepoHandler)
+	// CDN 静态资源
+	r.GET("/cdn/*path", resource.CDNProcessor())
 
-			// 证书管理
-			admin.GET("/certs/info", api.CertInfoHandler)
-			admin.POST("/certs/renew", api.CertRenewHandler)
-		}
+	// 动态路由：/pot/{org}/{name}/* -> 去掉 /pot/{org}/{name}
+	r.Any("/pot/:org/:name/*path", func(c *gin.Context) {
+		dynamicRouter.ServeHTTP(c.Writer, c.Request)
+	})
 
-		// 仓库管理
-		repos := v1.Group("/repos")
-		repos.Use(auth.TokenAuthMiddleware())
-		{
-			repos.GET("/:owner/:repo", server.GetRepoHandler)
-			repos.DELETE("/:owner/:repo", server.DeleteRepoHandler)
+	// 动态路由：/api/{org}/{name}/* -> 去掉 /{org}/{name}
+	r.Any("/api/:org/:name/*path", func(c *gin.Context) {
+		dynamicRouter.ServeHTTP(c.Writer, c.Request)
+	})
 
-			// 协作者管理 (Gogs 兼容)
-			repos.GET("/:owner/:repo/collaborators", server.ListCollaboratorsHandler)
-			repos.GET("/:owner/:repo/collaborators/:collaborator", server.CheckCollaboratorHandler)
-			repos.PUT("/:owner/:repo/collaborators/:collaborator", server.AddCollaboratorHandler)
-			repos.DELETE("/:owner/:repo/collaborators/:collaborator", server.RemoveCollaboratorHandler)
-		}
-	}
-
-	// 统一资源路由
-	r.GET("/uri/*path", auth.TokenAuthMiddleware(), router.ResourceProcessor())
-	r.Any("/att/*path", auth.TokenAuthMiddleware(), router.ATTProcessor())
-	r.GET("/cdn/*path", router.CDNProcessor())
-	r.Any("/web/*path", router.WebProcessor())
+	// 动态路由：/web/{org}/{name}/* -> 去掉 /{org}/{name}
+	r.Any("/web/:org/:name/*path", func(c *gin.Context) {
+		dynamicRouter.ServeHTTP(c.Writer, c.Request)
+	})
 
 	// Git Smart HTTP 协议 (受保护)
-	r.Any("/:owner/:reponame/*action", auth.TokenAuthMiddleware(), git.SmartHTTPServer())
+	r.Any("/repo/:owner/:reponame/*action", auth.TokenAuthMiddleware(), git.SmartHTTPServer())
 
 	// 健康检查
 	r.GET("/health", api.HealthCheckHandler)
+
+	// 未注册路由走动态路由器
+	r.NoRoute(func(c *gin.Context) {
+		dynamicRouter.ServeHTTP(c.Writer, c.Request)
+	})
 
 	// 设置 TLS
 	certManager := pothttps.NewManager()
@@ -234,107 +232,4 @@ func runService(ctx context.Context, us service.IUserService, rs service.IRepoSe
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	return srv.Shutdown(shutdownCtx)
-}
-
-// initLoader 初始化 Loader 模块
-func initLoader(us service.IUserService, rs service.IRepoService) {
-	// 构建服务 URL（内部通信）
-	scheme := "http"
-	if pothttps.IsHTTPS() {
-		scheme = "https"
-	}
-	serviceURL := fmt.Sprintf("%s://localhost:%s", scheme, config.HTTPPort)
-
-	// 自定义 HTTP Client 以跳过 TLS 验证（仅用于本地 Loader）
-	httpClient := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-
-	// 等待服务就绪 (Git Push 需要 HTTP 服务)
-	// 注意：ACME 申请证书可能需要几分钟，这里需要足够的等待时间
-	log.Println("Loader: waiting for service to be ready...")
-	maxRetries := 600 // 10分钟
-	for i := 0; i < maxRetries; i++ {
-		resp, err := httpClient.Get(serviceURL + "/health")
-		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			log.Println("Loader: service is ready")
-			break
-		}
-
-		if i%30 == 0 && i > 0 {
-			log.Printf("Loader: still waiting for service... (%ds/%ds)", i, maxRetries)
-		}
-		time.Sleep(1 * time.Second)
-	}
-
-	// 确保基础包存在（尝试自动从程序目录复制）
-	basePackPath := filepath.Join(config.DataDir, "potstack-base.zip")
-	ensureBasePack(basePackPath)
-
-	// 创建 Loader 配置
-	loaderCfg := &loader.Config{
-		PotStackURL:  serviceURL,
-		Token:        config.PotStackToken,
-		BasePackPath: basePackPath,
-		DataDir:      config.DataDir,
-		HTTPClient:   httpClient, // 需要让 Loader 支持自定义 Client
-	}
-
-	// 执行初始化
-	l := loader.New(loaderCfg, us, rs)
-	if err := l.Initialize(); err != nil {
-		log.Fatalf("Loader: initialization failed: %v", err)
-	}
-
-	log.Println("Loader: initialization completed")
-}
-
-// ensureBasePack 自动分发基础包
-func ensureBasePack(targetPath string) {
-	if _, err := os.Stat(targetPath); err == nil {
-		return // 已存在
-	}
-
-	// 尝试寻找源文件 (程序同级目录)
-	exePath, err := os.Executable()
-	if err != nil {
-		return
-	}
-	srcPath := filepath.Join(filepath.Dir(exePath), "potstack-base.zip")
-
-	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
-		// log.Printf("Base pack source not found at %s, skipping auto-copy", srcPath)
-		return
-	}
-
-	// 执行复制
-	if err := copyFile(srcPath, targetPath); err != nil {
-		log.Printf("Warning: failed to copy base pack: %v", err)
-	} else {
-		log.Printf("Auto-deployed base pack to %s", targetPath)
-	}
-}
-
-func copyFile(src, dst string) error {
-	sourceFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer sourceFile.Close()
-
-	destFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer destFile.Close()
-
-	if _, err := io.Copy(destFile, sourceFile); err != nil {
-		return err
-	}
-	// 确保写入磁盘
-	return destFile.Sync()
 }

@@ -33,8 +33,7 @@ type Config struct {
 	Token         string       // 认证令牌
 	BasePackPath  string       // 基础包路径（zip 文件）
 	TempDir       string       // 临时目录
-	DataDir       string       // 数据目录 (用于查找公钥等)
-	PublicKeyPath string       // 公钥文件路径（可选，优先级最高）
+	PublicKeyPath string       // 公钥文件路径（可选，如果为 "" 则从 zip 包中 potstack_release.pub 读取）
 	HTTPClient    *http.Client // 自定义 HTTP 客户端（可选）
 }
 
@@ -227,35 +226,18 @@ func (l *Loader) deployComponents() error {
 		return fmt.Errorf("failed to unzip base pack: %w", err)
 	}
 
-	// 1.5 尝试查找公钥
+	// 1.5 尝试从 base pack 加载公钥 (如果尚未加载)
 	if len(l.pubKey) == 0 {
-		var candidates []string
-
-		// 1. 程序运行目录
-		if exe, err := os.Executable(); err == nil {
-			candidates = append(candidates, filepath.Join(filepath.Dir(exe), "potstack_release.pub"))
-		}
-
-		// 2. DataDir
-		if l.config.DataDir != "" {
-			candidates = append(candidates, filepath.Join(l.config.DataDir, "potstack_release.pub"))
-		}
-
-		for _, path := range candidates {
-			log.Printf("Trying to load public key from: %s", path)
-			if key, err := loadPublicKey(path); err == nil {
+		// 尝试常见的文件名
+		candidates := []string{"potstack_release.pub", "release.pub"}
+		for _, name := range candidates {
+			keyPath := filepath.Join(tempDir, name)
+			if key, err := loadPublicKey(keyPath); err == nil {
 				l.pubKey = key
-				log.Printf("Loaded public key from: %s", path)
+				log.Printf("Loaded public key from base pack: %s", name)
 				break
-			} else {
-				log.Printf("Failed to load key from %s: %v", path, err)
 			}
 		}
-	}
-
-	// 强制要求公钥存在，确保安全性
-	if len(l.pubKey) == 0 {
-		return fmt.Errorf("security error: public key not found in base pack, cannot verify packages")
 	}
 
 	// 2. 读取 install.yml
@@ -470,13 +452,21 @@ func (l *Loader) unzip(src, dest string) error {
 	return nil
 }
 
-// pushToRepo 推送目录内容到仓库
+// pushToRepo 推送目录内容到本地裸仓库
 func (l *Loader) pushToRepo(owner, repo, dir string) error {
-	log.Printf("Pushing %s to %s/%s.git", dir, owner, repo)
+	// 获取本地裸仓库路径
+	bareRepoPath := l.repoService.GetRepoPath(owner, repo)
+	log.Printf("Pushing %s to %s", dir, bareRepoPath)
+
+	// 检查裸仓库是否存在
+	if _, err := os.Stat(bareRepoPath); os.IsNotExist(err) {
+		return fmt.Errorf("bare repo does not exist: %s", bareRepoPath)
+	}
 
 	// 1. 打开或初始化本地仓库
 	r, err := git.PlainOpen(dir)
 	if err != nil {
+		log.Printf("Dir %s is not a git repo, initializing...", dir)
 		r, err = git.PlainInit(dir, false)
 		if err != nil {
 			return fmt.Errorf("failed to init repo: %w", err)
@@ -500,7 +490,7 @@ func (l *Loader) pushToRepo(owner, repo, dir string) error {
 	}
 
 	// 3. 提交
-	_, err = w.Commit("Initial commit by Loader", &git.CommitOptions{
+	hash, err := w.Commit("Initial commit by Loader", &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "potstack-loader",
 			Email: "loader@potstack.local",
@@ -508,37 +498,33 @@ func (l *Loader) pushToRepo(owner, repo, dir string) error {
 		},
 	})
 	if err != nil {
-		// 如果是 clean working tree，忽略错误
-		log.Printf("Commit info for %s/%s: %v", owner, repo, err)
+		log.Printf("Commit result for %s/%s: %v", owner, repo, err)
+	} else {
+		log.Printf("Committed %s/%s: %s", owner, repo, hash.String())
 	}
 
-	// 4. 配置远程
-	repoURL := fmt.Sprintf("%s/%s/%s.git", l.config.PotStackURL, owner, repo)
+	// 4. 配置远程指向本地裸仓库（如果已存在则删除重建）
+	_ = r.DeleteRemote("origin")
 	_, err = r.CreateRemote(&config.RemoteConfig{
 		Name: "origin",
-		URLs: []string{repoURL},
+		URLs: []string{bareRepoPath},
 	})
-	if err != nil && err != git.ErrRemoteExists {
+	if err != nil {
 		return fmt.Errorf("failed to create remote: %w", err)
 	}
+	log.Printf("Remote origin set to: %s", bareRepoPath)
 
-	// 5. 推送
-	// 使用自定义 Auth，go-git 会使用我们之前 InstallProtocol 注册的 Client
-	auth := &githttp.BasicAuth{
-		Username: l.config.Token, // Token 作为用户名
-		Password: "",             // 密码为空
-	}
-
+	// 5. 推送到本地裸仓库
 	err = r.Push(&git.PushOptions{
 		RemoteName: "origin",
-		Auth:       auth,
-		Force:      true, // 强制推送，确保覆盖任何现有提交
+		Force:      true,
 	})
 	if err != nil {
 		if err == git.NoErrAlreadyUpToDate {
 			log.Printf("Repo %s/%s already up to date", owner, repo)
 			return nil
 		}
+		log.Printf("Push failed for %s/%s: %v", owner, repo, err)
 		return fmt.Errorf("failed to push: %w", err)
 	}
 

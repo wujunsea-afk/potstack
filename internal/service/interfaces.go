@@ -19,6 +19,7 @@ type IRepoService interface {
 	CreateRepo(ctx context.Context, owner, name string) (*db.Repository, error)
 	DeleteRepo(ctx context.Context, owner, name string) error
 	GetRepo(ctx context.Context, owner, name string) (*db.Repository, error)
+	GetRepoPath(owner, name string) string
 
 	// 协作者管理
 	AddCollaborator(ctx context.Context, owner, repo, collaborator, permission string) error

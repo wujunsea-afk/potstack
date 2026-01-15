@@ -86,6 +86,11 @@ func (s *RepoService) GetRepo(ctx context.Context, owner, name string) (*db.Repo
 	return repo, nil
 }
 
+// GetRepoPath 返回仓库的本地文件系统路径
+func (s *RepoService) GetRepoPath(owner, name string) string {
+	return filepath.Join(config.RepoDir, owner, name+".git")
+}
+
 // AddCollaborator 添加协作者
 func (s *RepoService) AddCollaborator(ctx context.Context, owner, repoName, collaboratorName, permission string) error {
 	repo, err := db.GetRepositoryByOwnerAndName(owner, repoName)
