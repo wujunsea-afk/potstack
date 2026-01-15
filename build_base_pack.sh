@@ -93,9 +93,6 @@ for ppk in "$OUTPUT_DIR"/*.ppk; do
     fi
 done
 
-# 复制公钥到输出目录
-cp "${KEY_NAME}.pub" "$OUTPUT_DIR/"
-
 # 创建版本文件
 echo "$VERSION" > "$OUTPUT_DIR/VERSION"
 

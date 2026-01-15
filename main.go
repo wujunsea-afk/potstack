@@ -280,6 +280,7 @@ func initLoader(us service.IUserService, rs service.IRepoService) {
 		PotStackURL:  serviceURL,
 		Token:        config.PotStackToken,
 		BasePackPath: basePackPath,
+		DataDir:      config.DataDir,
 		HTTPClient:   httpClient, // 需要让 Loader 支持自定义 Client
 	}
 

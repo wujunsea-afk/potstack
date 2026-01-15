@@ -33,7 +33,8 @@ type Config struct {
 	Token         string       // 认证令牌
 	BasePackPath  string       // 基础包路径（zip 文件）
 	TempDir       string       // 临时目录
-	PublicKeyPath string       // 公钥文件路径（可选，如果为 "" 则从 zip 包中 potstack_release.pub 读取）
+	DataDir       string       // 数据目录 (用于查找公钥等)
+	PublicKeyPath string       // 公钥文件路径（可选，优先级最高）
 	HTTPClient    *http.Client // 自定义 HTTP 客户端（可选）
 }
 
@@ -226,18 +227,35 @@ func (l *Loader) deployComponents() error {
 		return fmt.Errorf("failed to unzip base pack: %w", err)
 	}
 
-	// 1.5 尝试从 base pack 加载公钥 (如果尚未加载)
+	// 1.5 尝试查找公钥
 	if len(l.pubKey) == 0 {
-		// 尝试常见的文件名
-		candidates := []string{"potstack_release.pub", "release.pub"}
-		for _, name := range candidates {
-			keyPath := filepath.Join(tempDir, name)
-			if key, err := loadPublicKey(keyPath); err == nil {
+		var candidates []string
+
+		// 1. 程序运行目录
+		if exe, err := os.Executable(); err == nil {
+			candidates = append(candidates, filepath.Join(filepath.Dir(exe), "potstack_release.pub"))
+		}
+
+		// 2. DataDir
+		if l.config.DataDir != "" {
+			candidates = append(candidates, filepath.Join(l.config.DataDir, "potstack_release.pub"))
+		}
+
+		for _, path := range candidates {
+			log.Printf("Trying to load public key from: %s", path)
+			if key, err := loadPublicKey(path); err == nil {
 				l.pubKey = key
-				log.Printf("Loaded public key from base pack: %s", name)
+				log.Printf("Loaded public key from: %s", path)
 				break
+			} else {
+				log.Printf("Failed to load key from %s: %v", path, err)
 			}
 		}
+	}
+
+	// 强制要求公钥存在，确保安全性
+	if len(l.pubKey) == 0 {
+		return fmt.Errorf("security error: public key not found in base pack, cannot verify packages")
 	}
 
 	// 2. 读取 install.yml
