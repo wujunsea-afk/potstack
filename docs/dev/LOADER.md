@@ -22,7 +22,7 @@ Loader 需要创建以下系统仓库：
 ### 目录结构
 
 ```
-$REPO_ROOT/repo/potstack/
+$DATA_DIR/repo/potstack/
 ├── keeper.git/
 │   ├── HEAD
 │   ├── objects/
@@ -46,7 +46,7 @@ $REPO_ROOT/repo/potstack/
 ### 3.1 数据库位置
 
 ```
-$REPO_ROOT/repo/potstack/repo.git/data/potstack.db
+$DATA_DIR/repo/potstack/repo.git/data/potstack.db
 ```
 
 ### 3.2 表结构
@@ -251,17 +251,17 @@ Status: 204 No Content
 │                    Loader 初始化流程                             │
 └─────────────────────────────────────────────────────────────────┘
 
-  1. 检查 PotStack 服务是否可用
-     GET /health
+  1. 检查 PotStack 服务/数据层是否可用
+     (内部检查)
 
-  2. 创建系统用户
-     POST /api/v1/admin/users
-     Body: {"username": "potstack", "email": "system@potstack.local"}
+  2. 创建系统用户 (调用 UserService)
+     Username: "potstack"
+     Email: "system@potstack.local"
 
-  3. 创建系统仓库
-     POST /api/v1/admin/users/potstack/repos  {"name": "keeper"}
-     POST /api/v1/admin/users/potstack/repos  {"name": "loader"}
-     POST /api/v1/admin/users/potstack/repos  {"name": "repo"}
+  3. 创建系统仓库 (调用 RepoService)
+     potstack/keeper
+     potstack/loader
+     potstack/repo
 
   4. 部署组件
      4.1 解压 potstack-base.zip
@@ -289,6 +289,8 @@ Status: 204 No Content
 
 ### 6.1 potstack-base.zip 结构
 
+> **自动分发**: 系统启动时，会自动检查数据目录（`$DATA_DIR`）下是否存在 `potstack-base.zip`。如果不存在，Loader 会尝试从程序运行目录（Executable Path）自动复制该文件，实现开箱即用。
+
 ```
 potstack-base.zip
 ├── install.yml       # 安装清单
@@ -308,11 +310,21 @@ packages:
 
 ### 6.3 ppk 文件结构
 
-ppk 是 ZIP 格式的归档文件，由 `potpacker` 工具生成：
+ppk 是 **具有自定义 Header 的 ZIP 归档文件**，由 `potpacker` 工具生成。
 
+**格式:**
 ```
-potstack.ppk (解压后)
-└── potstack/          # owner
+[Magic Bytes: POTP]  (4 bytes)
+[Version: 0x01]      (1 byte)
+[Sig Algo: 0x01]     (1 byte)
+[Content Len]        (8 bytes, BigEndian)
+[Signature]          (64 bytes, ED25519)
+[Compressed Data]    (Zip Content)
+```
+
+**Content (Zip) 结构:**
+```
+potstack/              # owner
     ├── keeper/        # potname
     │   └── pot.yml
     ├── loader/
@@ -373,8 +385,3 @@ potstack/
 go get github.com/mattn/go-sqlite3
 ```
 
-或使用纯 Go 实现（无 CGO）：
-
-```bash
-go get modernc.org/sqlite
-```

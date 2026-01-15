@@ -4,7 +4,8 @@
 # 用法: ./build_base_pack.sh
 # 输出: potstack-base.zip
 #
-# 说明: 使用 potpacker 生成 .ppk 文件，然后打包成 zip
+# 前置条件: 需要先生成密钥对
+#   ./potpacker keygen -o potstack_release
 
 set -e
 
@@ -12,79 +13,62 @@ set -e
 OUTPUT_DIR="dist"
 PACK_NAME="potstack-base.zip"
 VERSION=$(date +%Y%m%d%H%M%S)
-POTPACKER="./potpacker"  # potpacker 工具路径
+POTPACKER="./potpacker"
 KEY_NAME="potstack_release"
-
-# 定义要打包的组件（可扩展）
-# 格式: "源目录:输出文件名"
-PACKAGES=(
-    "components/potstack:potstack.ppk"
-    # 后续可添加更多，如:
-    # "components/myapp:myapp.ppk"
-)
 
 echo "Building PotStack Base Pack v${VERSION}..."
 
 # 检查 potpacker 工具
 if [ ! -x "$POTPACKER" ]; then
-    echo "Error: potpacker not found or not executable at $POTPACKER"
+    echo "Error: potpacker not found at $POTPACKER"
     exit 1
 fi
 
-# 1. 检查/生成密钥对
+# 检查密钥是否存在（不再自动生成）
 if [ ! -f "${KEY_NAME}.key" ]; then
-    echo "Generating signing key pair..."
-    "$POTPACKER" keygen -o "$KEY_NAME"
+    echo "Error: Signing key '${KEY_NAME}.key' not found!"
+    echo "Please generate it first:"
+    echo "  $POTPACKER keygen -o $KEY_NAME"
+    exit 1
 fi
 
 # 清理并创建目录
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# 初始化 install.yml
-cat > "$OUTPUT_DIR/install.yml" << EOF
-# PotStack Base Pack Install Manifest
-# 生成时间: $(date -Iseconds)
-version: "$VERSION"
-
-# 需要安装的 ppk 包列表
+# 生成批量打包配置（路径相对于 batch.yaml 所在目录）
+cat > "$OUTPUT_DIR/batch.yaml" << EOF
+key: "../${KEY_NAME}.key"
+output_dir: "."
 packages:
+  - path: "../components/potstack"
 EOF
 
-# 生成 ppk 文件并更新 install.yml
-for pkg in "${PACKAGES[@]}"; do
-    SRC="${pkg%%:*}"
-    OUT="${pkg##*:}"
-    
-    if [ -d "$SRC" ]; then
-        echo "Packing $SRC -> $OUT"
-        
-        # 执行 potpacker 并检查结果 (添加 -k 参数)
-        if ! "$POTPACKER" -p "$SRC" -o "$OUTPUT_DIR/$OUT" -k "${KEY_NAME}.key"; then
-            echo "Error: Failed to pack $SRC"
-            exit 1
-        fi
-        
-        # 验证输出文件存在
-        if [ ! -f "$OUTPUT_DIR/$OUT" ]; then
-            echo "Error: Expected output file $OUTPUT_DIR/$OUT not found"
-            exit 1
-        fi
-        
-        # 添加到 install.yml
-        echo "  - $OUT" >> "$OUTPUT_DIR/install.yml"
-        
-        echo "  ✓ $OUT created successfully"
-    else
-        echo "Warning: $SRC not found, skipping"
-    fi
-done
+# 执行批量打包
+echo "Running potpacker batch mode..."
+if ! "$POTPACKER" -c "$OUTPUT_DIR/batch.yaml"; then
+    echo "Error: Batch packing failed"
+    exit 1
+fi
+
+# 生成 install.yml
+cat > "$OUTPUT_DIR/install.yml" << EOF
+# PotStack Base Pack Install Manifest
+# Generated: $(date -Iseconds)
+version: "$VERSION"
+
+packages:
+  - potstack.ppk
+EOF
 
 # 复制公钥到输出目录
 cp "${KEY_NAME}.pub" "$OUTPUT_DIR/"
 
 # 创建版本文件
 echo "$VERSION" > "$OUTPUT_DIR/VERSION"
+
+# 清理临时配置
+rm -f "$OUTPUT_DIR/batch.yaml"
 
 # 打包
 echo "Creating zip package..."

@@ -12,6 +12,7 @@ import (
 	"potstack/config"
 	"potstack/internal/api"
 	"potstack/internal/db"
+	"potstack/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -26,7 +27,7 @@ func setupTestDB(t *testing.T, baseDir string) {
 	}
 
 	// 初始化数据库
-	config.RepoRoot = baseDir
+	config.DataDir = baseDir
 	config.RepoDir = repoDir
 	if err := db.Init(repoDir); err != nil {
 		t.Fatalf("Failed to init db: %v", err)
@@ -35,21 +36,27 @@ func setupTestDB(t *testing.T, baseDir string) {
 
 func setupRouter() *gin.Engine {
 	gin.SetMode(gin.TestMode)
+
+	// 初始化 Service (依赖已初始化的 DB)
+	us := service.NewUserService()
+	rs := service.NewRepoService()
+	server := api.NewServer(us, rs)
+
 	r := gin.New()
 	v1 := r.Group("/api/v1")
 	{
 		admin := v1.Group("/admin")
-		admin.POST("/users", api.CreateUserHandler)
-		admin.POST("/users/:username/repos", api.CreateRepoHandler)
-		admin.DELETE("/users/:username", api.DeleteUserHandler)
+		admin.POST("/users", server.CreateUserHandler)
+		admin.POST("/users/:username/repos", server.CreateRepoHandler)
+		admin.DELETE("/users/:username", server.DeleteUserHandler)
 
 		repos := v1.Group("/repos")
-		repos.GET("/:owner/:repo", api.GetRepoHandler)
-		repos.DELETE("/:owner/:repo", api.DeleteRepoHandler)
-		repos.GET("/:owner/:repo/collaborators", api.ListCollaboratorsHandler)
-		repos.GET("/:owner/:repo/collaborators/:collaborator", api.CheckCollaboratorHandler)
-		repos.PUT("/:owner/:repo/collaborators/:collaborator", api.AddCollaboratorHandler)
-		repos.DELETE("/:owner/:repo/collaborators/:collaborator", api.RemoveCollaboratorHandler)
+		repos.GET("/:owner/:repo", server.GetRepoHandler)
+		repos.DELETE("/:owner/:repo", server.DeleteRepoHandler)
+		repos.GET("/:owner/:repo/collaborators", server.ListCollaboratorsHandler)
+		repos.GET("/:owner/:repo/collaborators/:collaborator", server.CheckCollaboratorHandler)
+		repos.PUT("/:owner/:repo/collaborators/:collaborator", server.AddCollaboratorHandler)
+		repos.DELETE("/:owner/:repo/collaborators/:collaborator", server.RemoveCollaboratorHandler)
 	}
 	r.GET("/health", api.HealthCheckHandler)
 	return r

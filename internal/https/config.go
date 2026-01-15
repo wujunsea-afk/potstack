@@ -68,7 +68,7 @@ func DefaultConfig() *Config {
 }
 
 // Init 初始化 HTTPS 配置
-// configFile: $REPO_ROOT/https.yaml 的路径
+// configFile: $DATA_DIR/https.yaml 的路径
 // templateFile: 程序同目录的 https.yaml 模板路径
 func Init(configFile, templateFile string) error {
 	configPath = configFile

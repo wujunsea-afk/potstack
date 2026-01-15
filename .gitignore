@@ -1,11 +1,9 @@
 data
-potstack-linux
+potstack
 potstack.exe
 log
-potstack-base.zip
+server.log
 devtools
 potstack.ppk
-potstack_release.key
-potstack_release.pub
 
 

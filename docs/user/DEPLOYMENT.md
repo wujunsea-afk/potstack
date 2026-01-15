@@ -37,7 +37,7 @@ cd potstack
 #### 方式一：环境变量
 
 ```bash
-export POTSTACK_REPO_ROOT=data
+export POTSTACK_DATA_DIR=data
 export POTSTACK_HTTP_PORT=61080
 export POTSTACK_TOKEN=your-secret-token
 ```
@@ -46,15 +46,13 @@ export POTSTACK_TOKEN=your-secret-token
 
 **Linux:**
 ```bash
-cp start.sh.example start.sh
-vim start.sh  # 修改配置
+vim start.sh  # 修改 POTSTACK_TOKEN
 chmod +x start.sh
 ```
 
 **Windows:**
 ```cmd
-copy start.bat.example start.bat
-notepad start.bat  # 修改配置
+notepad start.bat  # 修改 POTSTACK_TOKEN
 ```
 
 ### 2.4 启动
@@ -63,7 +61,7 @@ notepad start.bat  # 修改配置
 ```bash
 ./start.sh
 # 或
-./potstack-linux
+./potstack
 ```
 
 **Windows:**
@@ -82,9 +80,10 @@ potstack.exe
 ```
 potstack/
 ├── potstack.exe          # 主程序 (Windows)
-├── potstack-linux        # 主程序 (Linux)
+├── potstack              # 主程序 (Linux)
+├── potstack-base.zip     # 基础组件包（Loader 自动部署）
 ├── https.yaml.example    # HTTPS 配置模板
-├── start.bat             # Windows 启动脚本
+├── start.bat             # Windows 启动脚本 
 ├── start.sh              # Linux 启动脚本
 └── VERSION               # 版本号
 ```
@@ -94,7 +93,7 @@ potstack/
 首次启动后会创建：
 
 ```
-$REPO_ROOT/                # 例如 ./data/
+$DATA_DIR/                # 例如 ./data/
 ├── https.yaml             # HTTPS 配置
 ├── certs/                 # 证书目录
 │   ├── cert.pem
@@ -103,13 +102,12 @@ $REPO_ROOT/                # 例如 ./data/
 │   └── potstack.log       # 日志
 └── repo/                  # 仓库目录
     ├── potstack/          # 系统仓库
-    │   ├── keeper.git/
-    │   ├── loader.git/
-    │   └── repo.git/
-    │       └── data/
-    │           └── potstack.db  # 数据库
-    └── user1/
-        └── myrepo.git/
+        ├── keeper.git/
+        ├── loader.git/
+        └── repo.git/
+            └── data/
+                └── potstack.db  # 数据库
+
 ```
 
 ---
@@ -126,18 +124,18 @@ $REPO_ROOT/                # 例如 ./data/
    - `cert.pem` - 证书
    - `key.pem` - 私钥
 
-2. 放置到 `$REPO_ROOT/certs/` 目录
+2. 放置到 `$DATA_DIR/certs/` 目录
 
-3. 修改 `$REPO_ROOT/https.yaml`：
+3. 修改 `$DATA_DIR/https.yaml`：
    ```yaml
    mode: https
    acme:
      enabled: false
    ```
 
-### 4.3 自动续签（DNS-01，推荐）
+### 4.3 自动续签（DNS-01）
 
-修改 `$REPO_ROOT/https.yaml`：
+修改 `$DATA_DIR/https.yaml`：
 
 ```yaml
 mode: https
@@ -189,7 +187,7 @@ curl -X POST -H "Authorization: token YOUR_TOKEN" \
 
 续签前会自动备份到：
 ```
-$REPO_ROOT/certs/archive/YYYYMMDD-HHMMSS/
+$DATA_DIR/certs/archive/YYYYMMDD-HHMMSS/
 ├── cert.pem
 └── key.pem
 ```
@@ -213,10 +211,10 @@ After=network.target
 Type=simple
 User=potstack
 WorkingDirectory=/opt/potstack
-Environment="POTSTACK_REPO_ROOT=/opt/potstack/data"
+Environment="POTSTACK_DATA_DIR=/opt/potstack/data"
 Environment="POTSTACK_HTTP_PORT=61080"
 Environment="POTSTACK_TOKEN=your-secret-token"
-ExecStart=/opt/potstack/potstack-linux
+ExecStart=/opt/potstack/potstack
 Restart=always
 RestartSec=5
 
@@ -250,12 +248,12 @@ FROM ubuntu:22.04
 
 WORKDIR /app
 
-COPY potstack-linux /app/potstack
+COPY potstack /app/potstack
 COPY https.yaml.example /app/
 
 RUN chmod +x /app/potstack
 
-ENV POTSTACK_REPO_ROOT=/data
+ENV POTSTACK_DATA_DIR=/data
 ENV POTSTACK_HTTP_PORT=61080
 
 EXPOSE 61080
@@ -363,7 +361,7 @@ curl http://localhost:61080/health
 ### 9.1 查看日志
 
 ```bash
-tail -f $REPO_ROOT/log/potstack.log
+tail -f $DATA_DIR/log/potstack.log
 ```
 
 ### 9.2 常见问题
@@ -371,7 +369,7 @@ tail -f $REPO_ROOT/log/potstack.log
 | 问题 | 原因 | 解决方案 |
 |------|------|---------|
 | 端口被占用 | 其他服务占用 | 修改 `POTSTACK_HTTP_PORT` |
-| 权限错误 | 目录权限不足 | `chmod -R 755 $REPO_ROOT` |
+| 权限错误 | 目录权限不足 | `chmod -R 755 $DATA_DIR` |
 | 数据库错误 | 数据库损坏 | 删除重建 `potstack.db` |
 | 证书申请失败 | DNS 配置错误 | 检查 DNS 凭证和域名 |
 
@@ -379,5 +377,5 @@ tail -f $REPO_ROOT/log/potstack.log
 
 ```bash
 export GIN_MODE=debug
-./potstack-linux
+./potstack
 ```

@@ -2,7 +2,7 @@
 # 修改后自动生效（约 30 秒），无需重启服务
 
 # 模式：http / https
-mode: http
+mode: https
 
 # ACME 自动证书配置（mode=https 时生效）
 acme:

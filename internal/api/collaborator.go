@@ -1,9 +1,10 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
-	"potstack/internal/db"
+	"potstack/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,77 +15,37 @@ type AddCollaboratorOption struct {
 }
 
 // ListCollaboratorsHandler 列出仓库的所有协作者
-// GET /api/v1/repos/:owner/:repo/collaborators
-func ListCollaboratorsHandler(c *gin.Context) {
+func (s *Server) ListCollaboratorsHandler(c *gin.Context) {
 	owner := c.Param("owner")
 	repoName := c.Param("repo")
 
-	// 获取仓库
-	repo, err := db.GetRepositoryByOwnerAndName(owner, repoName)
+	collabs, err := s.repoService.ListCollaborators(c.Request.Context(), owner, repoName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-	if repo == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "repository not found"})
-		return
-	}
-
-	// 获取协作者列表
-	collaborators, err := db.GetCollaborators(repo.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get collaborators"})
-		return
-	}
-
-	// 转换为响应格式
-	var response []*db.CollaboratorResponse
-	for _, collab := range collaborators {
-		if resp := collab.ToResponse(); resp != nil {
-			response = append(response, resp)
+		if errors.Is(err, service.ErrRepoNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repository not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
+		return
 	}
 
-	if response == nil {
-		response = []*db.CollaboratorResponse{}
-	}
-
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, collabs)
 }
 
 // CheckCollaboratorHandler 判断是否为协作者
-// GET /api/v1/repos/:owner/:repo/collaborators/:collaborator
-func CheckCollaboratorHandler(c *gin.Context) {
+func (s *Server) CheckCollaboratorHandler(c *gin.Context) {
 	owner := c.Param("owner")
 	repoName := c.Param("repo")
 	collaborator := c.Param("collaborator")
 
-	// 获取仓库
-	repo, err := db.GetRepositoryByOwnerAndName(owner, repoName)
+	isCollab, err := s.repoService.IsCollaborator(c.Request.Context(), owner, repoName, collaborator)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-	if repo == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "repository not found"})
-		return
-	}
-
-	// 获取用户
-	user, err := db.GetUserByUsername(collaborator)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-	if user == nil {
-		c.Status(http.StatusNotFound)
-		return
-	}
-
-	// 检查是否为协作者
-	isCollab, err := db.IsCollaborator(repo.ID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		if errors.Is(err, service.ErrRepoNotFound) { // IsCollaborator 内部调用了 GetRepo
+			c.JSON(http.StatusNotFound, gin.H{"error": "repository not found"})
+			return
+		}
+		// 用户未找到通常是 false，这里如果 IsCollaborator 返回 err 说明是系统错误
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -96,8 +57,7 @@ func CheckCollaboratorHandler(c *gin.Context) {
 }
 
 // AddCollaboratorHandler 添加协作者
-// PUT /api/v1/repos/:owner/:repo/collaborators/:collaborator
-func AddCollaboratorHandler(c *gin.Context) {
+func (s *Server) AddCollaboratorHandler(c *gin.Context) {
 	owner := c.Param("owner")
 	repoName := c.Param("repo")
 	collaborator := c.Param("collaborator")
@@ -118,27 +78,12 @@ func AddCollaboratorHandler(c *gin.Context) {
 		return
 	}
 
-	// 获取仓库
-	repo, err := db.GetRepositoryByOwnerAndName(owner, repoName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-	if repo == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "repository not found"})
-		return
-	}
-
-	// 获取或创建用户
-	user, err := db.GetOrCreateUser(collaborator, "")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get or create user"})
-		return
-	}
-
-	// 添加协作者
-	if err := db.AddCollaborator(repo.ID, user.ID, opt.Permission); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add collaborator"})
+	if err := s.repoService.AddCollaborator(c.Request.Context(), owner, repoName, collaborator, opt.Permission); err != nil {
+		if errors.Is(err, service.ErrRepoNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repository not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
 
@@ -146,37 +91,17 @@ func AddCollaboratorHandler(c *gin.Context) {
 }
 
 // RemoveCollaboratorHandler 移除协作者
-// DELETE /api/v1/repos/:owner/:repo/collaborators/:collaborator
-func RemoveCollaboratorHandler(c *gin.Context) {
+func (s *Server) RemoveCollaboratorHandler(c *gin.Context) {
 	owner := c.Param("owner")
 	repoName := c.Param("repo")
 	collaborator := c.Param("collaborator")
 
-	// 获取仓库
-	repo, err := db.GetRepositoryByOwnerAndName(owner, repoName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-	if repo == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "repository not found"})
-		return
-	}
-
-	// 获取用户
-	user, err := db.GetUserByUsername(collaborator)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-	if user == nil {
-		c.Status(http.StatusNoContent)
-		return
-	}
-
-	// 移除协作者
-	if err := db.RemoveCollaborator(repo.ID, user.ID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove collaborator"})
+	if err := s.repoService.RemoveCollaborator(c.Request.Context(), owner, repoName, collaborator); err != nil {
+		if errors.Is(err, service.ErrRepoNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repository not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
 

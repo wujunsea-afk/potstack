@@ -3,9 +3,10 @@ package loader
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/ed25519"
-	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"potstack/internal/service"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -35,9 +38,11 @@ type Config struct {
 
 // Loader 预处理模块
 type Loader struct {
-	config *Config
-	client *http.Client
-	pubKey ed25519.PublicKey // 验证 PPK 签名用
+	config      *Config
+	client      *http.Client
+	pubKey      ed25519.PublicKey // 验证 PPK 签名用
+	userService service.IUserService
+	repoService service.IRepoService
 }
 
 // InstallManifest install.yml 结构
@@ -47,7 +52,7 @@ type InstallManifest struct {
 }
 
 // New 创建 Loader 实例
-func New(cfg *Config) *Loader {
+func New(cfg *Config, us service.IUserService, rs service.IRepoService) *Loader {
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{
@@ -61,8 +66,10 @@ func New(cfg *Config) *Loader {
 	client.InstallProtocol("https", customGitClient)
 
 	l := &Loader{
-		config: cfg,
-		client: httpClient,
+		config:      cfg,
+		client:      httpClient,
+		userService: us,
+		repoService: rs,
 	}
 
 	// 尝试加载公钥 (如果配置了路径)
@@ -152,15 +159,9 @@ func (l *Loader) waitForService() error {
 func (l *Loader) createSystemUser() error {
 	log.Println("Creating system user: potstack")
 
-	body := map[string]string{
-		"username": "potstack",
-		"email":    "system@potstack.local",
-	}
-
-	_, err := l.apiRequest("POST", "/api/v1/admin/users", body)
+	_, err := l.userService.CreateUser(context.Background(), "potstack", "system@potstack.local", "")
 	if err != nil {
-		// 如果用户已存在，忽略错误
-		if strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "already exists") {
+		if errors.Is(err, service.ErrUserAlreadyExists) {
 			log.Println("System user already exists")
 			return nil
 		}
@@ -178,14 +179,9 @@ func (l *Loader) createSystemRepos() error {
 	for _, name := range repos {
 		log.Printf("Creating system repo: potstack/%s", name)
 
-		body := map[string]string{
-			"name": name,
-		}
-
-		_, err := l.apiRequest("POST", "/api/v1/admin/users/potstack/repos", body)
+		_, err := l.repoService.CreateRepo(context.Background(), "potstack", name)
 		if err != nil {
-			// 如果仓库已存在，忽略错误
-			if strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "already exists") {
+			if errors.Is(err, service.ErrRepoAlreadyExists) {
 				log.Printf("Repo potstack/%s already exists", name)
 				continue
 			}
@@ -196,6 +192,17 @@ func (l *Loader) createSystemRepos() error {
 	}
 
 	return nil
+}
+
+// ... deployComponents and other methods remain ...
+
+// ensureUserAndRepo 确保用户和仓库存在
+func (l *Loader) ensureUserAndRepo(owner, repo string) {
+	// 创建用户（忽略错误）
+	l.userService.CreateUser(context.Background(), owner, owner+"@potstack.local", "")
+
+	// 创建仓库（忽略错误）
+	l.repoService.CreateRepo(context.Background(), owner, repo)
 }
 
 // deployComponents 解压并推送组件
@@ -396,20 +403,6 @@ func extractZip(r *zip.Reader, dest string) error {
 	return nil
 }
 
-// ensureUserAndRepo 确保用户和仓库存在
-func (l *Loader) ensureUserAndRepo(owner, repo string) {
-	// 创建用户（忽略已存在错误）
-	_, _ = l.apiRequest("POST", "/api/v1/admin/users", map[string]string{
-		"username": owner,
-		"email":    owner + "@potstack.local",
-	})
-
-	// 创建仓库（忽略已存在错误）
-	_, _ = l.apiRequest("POST", fmt.Sprintf("/api/v1/admin/users/%s/repos", owner), map[string]string{
-		"name": repo,
-	})
-}
-
 // unzip 解压 zip 文件
 func (l *Loader) unzip(src, dest string) error {
 	r, err := zip.OpenReader(src)
@@ -526,43 +519,4 @@ func (l *Loader) pushToRepo(owner, repo, dir string) error {
 
 	log.Printf("Pushed %s/%s successfully", owner, repo)
 	return nil
-}
-
-// apiRequest 发送 API 请求
-func (l *Loader) apiRequest(method, path string, body interface{}) ([]byte, error) {
-	var reqBody io.Reader
-	if body != nil {
-		jsonBody, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		reqBody = bytes.NewReader(jsonBody)
-	}
-
-	req, err := http.NewRequest(method, l.config.PotStackURL+path, reqBody)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	if l.config.Token != "" {
-		req.Header.Set("Authorization", "token "+l.config.Token)
-	}
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error: %d - %s", resp.StatusCode, string(respBody))
-	}
-
-	return respBody, nil
 }

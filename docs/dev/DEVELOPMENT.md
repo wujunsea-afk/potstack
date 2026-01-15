@@ -90,7 +90,7 @@ potstack/
 
 ```bash
 # 编译 Linux 版本
-go build -o potstack-linux .
+go build -o potstack .
 
 # 编译 Windows 版本
 GOOS=windows GOARCH=amd64 go build -o potstack.exe .
@@ -126,7 +126,7 @@ GOOS=windows GOARCH=amd64 go build -o potstack-windows-amd64.exe .
 ### 4.1 设置环境变量
 
 ```bash
-export POTSTACK_REPO_ROOT=./testdata
+export POTSTACK_DATA_DIR=./testdata
 export POTSTACK_HTTP_PORT=61080
 export POTSTACK_TOKEN=dev-token
 ```
@@ -391,3 +391,55 @@ Add Gogs-compatible collaborator management:
 | `develop` | 开发分支 |
 | `feature/*` | 功能分支 |
 | `fix/*` | 修复分支 |
+
+---
+
+## 十一、内部模块调用规范
+
+在 PotStack 内部（如 Loader、Router、Git Hook），严禁通过 HTTP Loopback（`http://localhost:port/api/...`）调用自身 API，必须通过 **Service Layer** 直接调用。
+
+### 11.1 推荐模式 (Service Injection)
+
+所有需要调用业务逻辑的模块，都应该在初始化时注入相应的 Service 接口 (`service.IUserService`, `service.IRepoService`)。
+
+**示例：Loader 模块**
+
+```go
+type Loader struct {
+    userService service.IUserService
+    repoService service.IRepoService
+}
+
+func New(us service.IUserService, rs service.IRepoService) *Loader {
+    return &Loader{
+        userService: us,
+        repoService: rs,
+    }
+}
+
+func (l *Loader) createSystemRepos() error {
+    // 直接调用 Go 函数，无网络开销
+    return l.repoService.CreateRepo(context.Background(), "potstack", "repo")
+}
+```
+
+### 11.2 禁止模式 (HTTP Loopback)
+
+**错误示例：**
+
+```go
+// 🚫 严禁在内部模块这样写！
+resp, err := http.Post("http://localhost:61080/api/v1/repos", ...)
+```
+
+这种方式会导致：
+1. unnecessary TCP overhead
+2. 可能导致死锁（如果 server 尚未启动）
+3. 增加依赖复杂性（需处理 TLS、Token Auth）
+
+### 11.3 例外情况
+
+仅在以下场景允许使用 HTTP Client：
+1. **集成测试** (`api_test.go`)：需要测试完整的 HTTP 路由和中间件。
+2. **Git Push**：因为 Go-Git 库或 git 命令本身是通过 HTTP 协议与 Git Server 交互的。
+3. **健康检查等待**：等待服务端口 Ready。

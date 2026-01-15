@@ -16,9 +16,9 @@ PotStack 支持三种 HTTPS 模式：
 | 文件 | 位置 | 说明 |
 |------|------|------|
 | `https.yaml.example` | 程序同目录 | 配置模板（安装包自带） |
-| `https.yaml` | `$REPO_ROOT/` | 实际配置（运行时使用） |
+| `https.yaml` | `$DATA_DIR/` | 实际配置（运行时使用） |
 
-首次启动时，如果 `$REPO_ROOT/https.yaml` 不存在，程序会自动从模板 `https.yaml.example` 复制。
+首次启动时，如果 `$DATA_DIR/https.yaml` 不存在，程序会自动从模板 `https.yaml.example` 复制。
 
 配置支持热重载（约 30 秒生效），无需重启服务。
 
@@ -190,7 +190,7 @@ acme:
 
 ### 使用方式
 
-1. 将证书放到 `$REPO_ROOT/certs/`:
+1. 将证书放到 `$DATA_DIR/certs/`:
    - `cert.pem` - 证书文件
    - `key.pem` - 私钥文件
 
@@ -307,7 +307,7 @@ POST /api/v1/admin/certs/renew
 ## 十一、证书存储结构
 
 ```
-$REPO_ROOT/certs/
+$DATA_DIR/certs/
 ├── cert.pem              # 当前证书
 ├── key.pem               # 当前私钥
 ├── acme_user.json        # ACME 账户信息

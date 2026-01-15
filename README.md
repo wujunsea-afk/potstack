@@ -16,7 +16,7 @@ PotStack 是一个跨平台的集成后端服务（支持 Windows / Linux），�
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
-| `POTSTACK_REPO_ROOT` | `data` | 数据根目录 |
+| `POTSTACK_DATA_DIR` | `data` | 数据根目录 |
 | `POTSTACK_HTTP_PORT` | `61080` | HTTP/HTTPS 服务端口 |
 | `POTSTACK_TOKEN` | 无 | 鉴权令牌（必填） |
 
@@ -29,7 +29,7 @@ PotStack 是一个跨平台的集成后端服务（支持 Windows / Linux），�
 ├── start.bat                 # Windows 启动脚本
 └── start.sh                  # Linux 启动脚本
 
-$REPO_ROOT/                    # 例如 ./data/
+$POTSTACK_DATA_DIR/           # 例如 ./data/
 ├── https.yaml                 # HTTPS 配置（首次启动自动创建）
 ├── certs/                     # 证书目录
 │   ├── cert.pem
@@ -52,7 +52,7 @@ $REPO_ROOT/                    # 例如 ./data/
 #### 配置文件
 
 - **模板文件**: `https.yaml.example`（与程序同目录）
-- **配置文件**: `$REPO_ROOT/https.yaml`（运行时使用，支持热重载）
+- **配置文件**: `$DATA_DIR/https.yaml`（运行时使用，支持热重载）
 
 #### 模式一：纯 HTTP（默认）
 
@@ -68,7 +68,7 @@ acme:
   enabled: false
 ```
 
-将证书放到 `$REPO_ROOT/certs/cert.pem` 和 `key.pem`。
+将证书放到 `$DATA_DIR/certs/cert.pem` 和 `key.pem`。
 
 #### 模式三：自动续签（HTTP-01）
 
@@ -120,7 +120,7 @@ acme:
 ```
 
 构建产物：
-- `potstack-linux`: Linux 可执行文件
+- `potstack`: Linux 可执行文件
 - `potstack.exe`: Windows 可执行文件
 - `potstack-base.zip`: 完整部署包
 

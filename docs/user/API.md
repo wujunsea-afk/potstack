@@ -443,7 +443,7 @@ func pullRepo() error {
 
 - **URL**: `GET /uri/*path`
 - **认证**: 需要
-- **说明**: 访问 `$REPO_ROOT` 下的文件
+- **说明**: 访问 `$DATA_DIR` 下的文件
 
 **示例:**
 ```bash
@@ -455,7 +455,7 @@ curl http://localhost:61080/uri/zhangsan/myrepo/README.md \
 
 - **URL**: `GET /cdn/*path`
 - **认证**: 无需
-- **说明**: 访问 `$REPO_ROOT/biz.cdn` 下的静态资源
+- **说明**: 访问 `$DATA_DIR/biz.cdn` 下的静态资源
 
 **示例:**
 ```bash
