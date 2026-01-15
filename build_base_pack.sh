@@ -37,12 +37,36 @@ rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
 # 生成批量打包配置（路径相对于 batch.yaml 所在目录）
+# 1. 写入头部配置
 cat > "$OUTPUT_DIR/batch.yaml" << EOF
 key: "../${KEY_NAME}.key"
 output_dir: "."
 packages:
-  - path: "../components/potstack"
 EOF
+
+# 2. 自动扫描 components 目录下的所有子目录
+COMPONENTS_ROOT="components"
+FOUND_COUNT=0
+
+if [ -d "$COMPONENTS_ROOT" ]; then
+    for dir in "$COMPONENTS_ROOT"/*; do
+        if [ -d "$dir" ]; then
+            # 路径相对于 dist/batch.yaml，所以需要加 ../
+            # 例如: components/potstack -> ../components/potstack
+            echo "  - path: \"../$dir\"" >> "$OUTPUT_DIR/batch.yaml"
+            echo "Found component: $dir"
+            ((FOUND_COUNT++))
+        fi
+    done
+else
+    echo "Error: Components directory '$COMPONENTS_ROOT' not found!"
+    exit 1
+fi
+
+if [ "$FOUND_COUNT" -eq 0 ]; then
+    echo "Error: No components found in '$COMPONENTS_ROOT'!"
+    exit 1
+fi
 
 # 执行批量打包
 echo "Running potpacker batch mode..."
@@ -51,15 +75,23 @@ if ! "$POTPACKER" -c "$OUTPUT_DIR/batch.yaml"; then
     exit 1
 fi
 
-# 生成 install.yml
+# 生成 install.yml 头部
 cat > "$OUTPUT_DIR/install.yml" << EOF
 # PotStack Base Pack Install Manifest
 # Generated: $(date -Iseconds)
 version: "$VERSION"
 
 packages:
-  - potstack.ppk
 EOF
+
+# 动态添加所有 .ppk 文件
+for ppk in "$OUTPUT_DIR"/*.ppk; do
+    if [ -f "$ppk" ]; then
+        filename=$(basename "$ppk")
+        echo "  - $filename" >> "$OUTPUT_DIR/install.yml"
+        echo "Added $filename to manifest"
+    fi
+done
 
 # 复制公钥到输出目录
 cp "${KEY_NAME}.pub" "$OUTPUT_DIR/"

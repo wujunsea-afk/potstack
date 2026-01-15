@@ -1,0 +1,4 @@
+key: "../potstack_release.key"
+output_dir: "."
+packages:
+  - path: "../components/potstack"
