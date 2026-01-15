@@ -5,6 +5,6 @@ log
 server.log
 devtools
 potstack.ppk
-components/test-org
+dist
 
 
