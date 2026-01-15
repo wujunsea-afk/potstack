@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -461,6 +462,12 @@ func (l *Loader) pushToRepo(owner, repo, dir string) error {
 		r, err = git.PlainInit(dir, false)
 		if err != nil {
 			return fmt.Errorf("failed to init repo: %w", err)
+		}
+
+		// 默认 go-git 使用 master，强制切换到 main 以匹配服务端
+		headRef := plumbing.NewSymbolicReference(plumbing.HEAD, "refs/heads/main")
+		if err := r.Storer.SetReference(headRef); err != nil {
+			return fmt.Errorf("failed to set HEAD to main: %w", err)
 		}
 	}
 
