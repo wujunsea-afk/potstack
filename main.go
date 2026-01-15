@@ -24,6 +24,7 @@ import (
 	"potstack/internal/service"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/glebarez/go-sqlite" // 强制注册驱动
 )
 
 func main() {
@@ -128,8 +129,7 @@ func initDatabase() {
 
 	// 初始化数据库
 	if err := db.Init(config.RepoDir); err != nil {
-		log.Printf("Warning: failed to init database: %v", err)
-		return
+		log.Fatalf("Fatal: failed to init database: %v", err)
 	}
 
 	log.Println("Database initialized")

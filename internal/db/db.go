@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 var (
@@ -36,7 +34,7 @@ func Init(repoDir string) error {
 
 		// 打开数据库
 		var err error
-		db, err = sql.Open("sqlite3", dbPath)
+		db, err = sql.Open("sqlite", dbPath)
 		if err != nil {
 			initErr = fmt.Errorf("failed to open database: %w", err)
 			return
