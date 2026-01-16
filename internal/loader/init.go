@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"potstack/config"
-	pothttps "potstack/internal/https"
 	"potstack/internal/keeper"
 	"potstack/internal/service"
 )
@@ -30,14 +29,10 @@ func StartAsync(us service.IUserService, rs service.IRepoService, sm *keeper.San
 }
 
 func initLoader(us service.IUserService, rs service.IRepoService) *Loader {
-	// 构建服务 URL
-	scheme := "http"
-	if pothttps.IsHTTPS() {
-		scheme = "https"
-	}
-	serviceURL := fmt.Sprintf("%s://localhost:%s", scheme, config.HTTPPort)
+	// 构建服务 URL（使用内部端口，无需 HTTPS）
+	serviceURL := fmt.Sprintf("http://localhost:%s", config.InternalPort)
 
-	// HTTP Client（跳过 TLS 验证）
+	// HTTP Client（跳过 TLS 验证，保留以防未来需要）
 	httpClient := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{

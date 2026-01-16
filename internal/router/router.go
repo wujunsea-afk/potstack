@@ -119,7 +119,7 @@ func (r *Router) RegisterExe(org, name string) error {
 	return nil
 }
 
-// registerThreeRoutesInternal 注册 /pot、/api、/web 三个前缀路由
+// registerThreeRoutesInternal 注册 /pot、/api、/web、/admin 四个前缀路由
 func (r *Router) registerThreeRoutesInternal(org, name string, handler http.Handler) {
 	var registeredKeys []string
 
@@ -140,6 +140,12 @@ func (r *Router) registerThreeRoutesInternal(org, name string, handler http.Hand
 	r.pathRoutes[webPrefix] = stripOrgNameHandler(org, name, handler)
 	registeredKeys = append(registeredKeys, "PATH:"+webPrefix)
 	log.Printf("[Router] Registered route: %s", webPrefix)
+
+	// 4. /admin/{org}/{name}/* -> 去掉 /{org}/{name}
+	adminPrefix := fmt.Sprintf("/admin/%s/%s", org, name)
+	r.pathRoutes[adminPrefix] = stripOrgNameHandler(org, name, handler)
+	registeredKeys = append(registeredKeys, "PATH:"+adminPrefix)
+	log.Printf("[Router] Registered route: %s", adminPrefix)
 
 	r.sandboxRoutes[fmt.Sprintf("%s/%s", org, name)] = registeredKeys
 }

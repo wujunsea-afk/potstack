@@ -8,7 +8,9 @@ import (
 var (
 	// 核心配置（环境变量）
 	DataDir       string // 数据根目录
-	HTTPPort      string // 服务端口
+	HTTPPort      string // 业务端口
+	AdminPort     string // 管理端口
+	InternalPort  string // 内部端口（固定）
 	PotStackToken string // 鉴权令牌
 )
 
@@ -25,6 +27,8 @@ var (
 func init() {
 	DataDir = getEnv("POTSTACK_DATA_DIR", "data")
 	HTTPPort = getEnv("POTSTACK_HTTP_PORT", "61080")
+	AdminPort = getEnv("POTSTACK_ADMIN_PORT", "61081")
+	InternalPort = "61082" // 固定值
 	PotStackToken = os.Getenv("POTSTACK_TOKEN")
 
 	// 派生路径

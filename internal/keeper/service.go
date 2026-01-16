@@ -211,7 +211,7 @@ func (s *SandboxManager) monitor() {
 
 // refreshRoute 调用 Router 刷新接口更新路由
 func (s *SandboxManager) refreshRoute(org, name string) {
-	url := fmt.Sprintf("http://localhost:%s/pot/potstack/router/refresh", config.HTTPPort)
+	url := fmt.Sprintf("http://localhost:%s/pot/potstack/router/refresh", config.InternalPort)
 
 	payload := map[string]string{"org": org, "name": name}
 	jsonData, _ := json.Marshal(payload)
@@ -329,7 +329,7 @@ func (s *SandboxManager) Start(org, name string) error {
 	env = append(env, fmt.Sprintf("DATA_PATH=%s", dataPath))
 	env = append(env, fmt.Sprintf("PROGRAM_PATH=%s", programDir))
 	env = append(env, fmt.Sprintf("LOG_PATH=%s", filepath.Join(sandboxRoot, "log")))
-	env = append(env, fmt.Sprintf("POTSTACK_BASE_URL=http://localhost:%s", config.HTTPPort))
+	env = append(env, fmt.Sprintf("POTSTACK_BASE_URL=http://localhost:%s", config.InternalPort))
 	env = append(env, fmt.Sprintf("SU_SERVER_ADDR=%s", addr))
 	// 用户自定义环境变量
 	for _, e := range potCfg.Env {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"log"
 	"net/http"
 	"os"
@@ -12,7 +13,6 @@ import (
 
 	"potstack/config"
 	"potstack/internal/api"
-	"potstack/internal/auth"
 	"potstack/internal/db"
 	"potstack/internal/git"
 	pothttps "potstack/internal/https"
@@ -148,42 +148,7 @@ func initDatabase() {
 }
 
 func runService(ctx context.Context, us service.IUserService, rs service.IRepoService, dynamicRouter *router.Router) error {
-	r := gin.Default()
-	_ = api.NewServer(us, rs) // 保留以备后用
-
-	// CDN 静态资源
-	r.GET("/cdn/*path", resource.CDNProcessor())
-
-	// ⚠️ 重要：特殊路径必须在动态路由前注册
-	r.POST("/pot/potstack/router/refresh", router.RefreshHandler(dynamicRouter))
-
-	// 动态路由：/pot/{org}/{name}/* -> 去掉 /pot/{org}/{name}
-	r.Any("/pot/:org/:name/*path", func(c *gin.Context) {
-		dynamicRouter.ServeHTTP(c.Writer, c.Request)
-	})
-
-	// 动态路由：/api/{org}/{name}/* -> 去掉 /{org}/{name}
-	r.Any("/api/:org/:name/*path", func(c *gin.Context) {
-		dynamicRouter.ServeHTTP(c.Writer, c.Request)
-	})
-
-	// 动态路由：/web/{org}/{name}/* -> 去掉 /{org}/{name}
-	r.Any("/web/:org/:name/*path", func(c *gin.Context) {
-		dynamicRouter.ServeHTTP(c.Writer, c.Request)
-	})
-
-	// Git Smart HTTP 协议 (受保护)
-	r.Any("/repo/:owner/:reponame/*action", auth.TokenAuthMiddleware(), git.SmartHTTPServer())
-
-	// 健康检查
-	r.GET("/health", api.HealthCheckHandler)
-
-	// 未注册路由走动态路由器
-	r.NoRoute(func(c *gin.Context) {
-		dynamicRouter.ServeHTTP(c.Writer, c.Request)
-	})
-
-	// 设置 TLS
+	// 设置 TLS（业务和管理端口共享）
 	certManager := pothttps.NewManager()
 	tlsConfig, err := certManager.Setup()
 	if err != nil {
@@ -191,48 +156,114 @@ func runService(ctx context.Context, us service.IUserService, rs service.IRepoSe
 		tlsConfig = nil
 	}
 
-	var srv *http.Server
-
 	if tlsConfig != nil {
-		// HTTPS 模式
-		srv = &http.Server{
-			Addr:      ":" + config.HTTPPort,
-			Handler:   r,
-			TLSConfig: tlsConfig,
-		}
-		log.Printf("HTTPS listening on :%s", config.HTTPPort)
-
-		// 启动证书热重载
 		certManager.StartCertWatcher(30 * time.Second)
-
-		// 启动定时续签检查（每 12 小时检查一次）
-		// certManager.StartRenewalChecker(12 * time.Hour)
-		certManager.StartRenewalChecker(1 * time.Minute) // 测试用
-
-		go func() {
-			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("HTTPS server error: %v", err)
-			}
-		}()
-	} else {
-		// HTTP 模式
-		srv = &http.Server{
-			Addr:    ":" + config.HTTPPort,
-			Handler: r,
-		}
-		log.Printf("HTTP listening on :%s", config.HTTPPort)
-
-		go func() {
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("HTTP server error: %v", err)
-			}
-		}()
+		certManager.StartRenewalChecker(1 * time.Minute)
 	}
 
-	<-ctx.Done()
-	log.Println("Stopping service...")
+	// 启动三个端口
+	go runBusinessService(ctx, dynamicRouter, tlsConfig)
+	go runAdminService(ctx, dynamicRouter, tlsConfig)
+	runInternalService(ctx, dynamicRouter) // 阻塞
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-	return srv.Shutdown(shutdownCtx)
+	return nil
+}
+
+// runBusinessService 业务端口 (61080) - /web, /api, /cdn
+func runBusinessService(ctx context.Context, dynamicRouter *router.Router, tlsConfig *tls.Config) {
+	r := gin.Default()
+
+	// CDN 静态资源
+	r.GET("/cdn/*path", resource.CDNProcessor())
+
+	// 动态路由：/api/{org}/{name}/*
+	r.Any("/api/:org/:name/*path", func(c *gin.Context) {
+		dynamicRouter.ServeHTTP(c.Writer, c.Request)
+	})
+
+	// 动态路由：/web/{org}/{name}/*
+	r.Any("/web/:org/:name/*path", func(c *gin.Context) {
+		dynamicRouter.ServeHTTP(c.Writer, c.Request)
+	})
+
+	// 健康检查
+	r.GET("/health", api.HealthCheckHandler)
+
+	srv := &http.Server{
+		Addr:      ":" + config.HTTPPort,
+		Handler:   r,
+		TLSConfig: tlsConfig,
+	}
+
+	if tlsConfig != nil {
+		log.Printf("Business HTTPS listening on :%s", config.HTTPPort)
+		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			log.Printf("Business HTTPS server error: %v", err)
+		}
+	} else {
+		log.Printf("Business HTTP listening on :%s", config.HTTPPort)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Business HTTP server error: %v", err)
+		}
+	}
+}
+
+// runAdminService 管理端口 (61081) - /health, /admin
+func runAdminService(ctx context.Context, dynamicRouter *router.Router, tlsConfig *tls.Config) {
+	r := gin.Default()
+
+	// 健康检查
+	r.GET("/health", api.HealthCheckHandler)
+
+	// 动态路由：/admin/{org}/{name}/*
+	r.Any("/admin/:org/:name/*path", func(c *gin.Context) {
+		dynamicRouter.ServeHTTP(c.Writer, c.Request)
+	})
+
+	srv := &http.Server{
+		Addr:      ":" + config.AdminPort,
+		Handler:   r,
+		TLSConfig: tlsConfig,
+	}
+
+	if tlsConfig != nil {
+		log.Printf("Admin HTTPS listening on :%s", config.AdminPort)
+		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			log.Printf("Admin HTTPS server error: %v", err)
+		}
+	} else {
+		log.Printf("Admin HTTP listening on :%s", config.AdminPort)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Admin HTTP server error: %v", err)
+		}
+	}
+}
+
+// runInternalService 内部端口 (61082) - /pot, /repo, /refresh（HTTP only，无认证）
+func runInternalService(ctx context.Context, dynamicRouter *router.Router) {
+	r := gin.Default()
+
+	// 刷新路由接口
+	r.POST("/pot/potstack/router/refresh", router.RefreshHandler(dynamicRouter))
+
+	// 动态路由：/pot/{org}/{name}/*
+	r.Any("/pot/:org/:name/*path", func(c *gin.Context) {
+		dynamicRouter.ServeHTTP(c.Writer, c.Request)
+	})
+
+	// Git Smart HTTP 协议（内部端口无认证）
+	r.Any("/repo/:owner/:reponame/*action", git.SmartHTTPServer())
+
+	// 健康检查
+	r.GET("/health", api.HealthCheckHandler)
+
+	srv := &http.Server{
+		Addr:    ":" + config.InternalPort,
+		Handler: r,
+	}
+
+	log.Printf("Internal HTTP listening on :%s", config.InternalPort)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("Internal HTTP server error: %v", err)
+	}
 }
