@@ -194,11 +194,18 @@ func ATTProcessor() gin.HandlerFunc {
 // 直接从 Git 仓库的 HEAD commit 读取文件
 func NewStaticHandler(repoRoot, org, name, root string) http.Handler {
 	repoPath := filepath.Join(repoRoot, org, fmt.Sprintf("%s.git", name))
+	log.Printf("[NewStaticHandler] repoPath=%s, root=%s", repoPath, root)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 获取请求的文件路径，拼接 root 前缀
 		reqPath := strings.TrimPrefix(r.URL.Path, "/")
-		filePathInRepo := filepath.Join(root, reqPath)
+		
+		// 注意：Git 内部路径使用正斜杠，不能用 filepath.Join（Windows 会变成反斜杠）
+		filePathInRepo := root + "/" + reqPath
+		if root == "" {
+			filePathInRepo = reqPath
+		}
+		log.Printf("[NewStaticHandler] reqPath=%s, filePathInRepo=%s", reqPath, filePathInRepo)
 
 		// 使用 go-git 从仓库读取文件
 		serveRepoFileHTTP(w, r, repoPath, filePathInRepo)

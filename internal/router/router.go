@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -42,6 +43,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	log.Printf("[Router] ServeHTTP: path=%s, registered routes count=%d", req.URL.Path, len(r.pathRoutes))
+
 	// Find longest matching prefix
 	var bestMatch string
 	var bestHandler http.Handler
@@ -56,83 +59,89 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if bestHandler != nil {
+		log.Printf("[Router] Matched prefix: %s", bestMatch)
 		bestHandler.ServeHTTP(w, req)
 		return
 	}
 
+	log.Printf("[Router] No route matched for path: %s", req.URL.Path)
 	http.NotFound(w, req)
 }
 
-// UpdateRoutes updates routes for a sandbox based on pot.yml and run.yml
-func (r *Router) UpdateRoutes(org, name string, includeExe bool) error {
+// RegisterStatic 注册 static 类型路由（直接从 Git 服务文件）
+func (r *Router) RegisterStatic(org, name string, potCfg *models.PotConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 1. Cleanup old routes
+	// 1. 清理旧路由
 	r.removeRoutesInternal(org, name)
 
-	baseDir := filepath.Join(r.RepoRoot, org, fmt.Sprintf("%s.git", name))
-	potFile := filepath.Join(baseDir, "data", "faaspot", "program", "pot.yml")
+	// 2. 创建 Static Handler
+	handler := resource.NewStaticHandler(r.RepoRoot, org, name, potCfg.Root)
 
-	// Read Config
-	potData, err := os.ReadFile(potFile)
+	// 3. 注册三个路由
+	r.registerThreeRoutesInternal(org, name, handler)
+	return nil
+}
+
+// RegisterExe 注册 exe 类型路由（需要读取 run.yml）
+func (r *Router) RegisterExe(org, name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// 1. 清理旧路由
+	r.removeRoutesInternal(org, name)
+
+	// 2. 读取 run.yml 获取端口
+	baseDir := filepath.Join(r.RepoRoot, org, fmt.Sprintf("%s.git", name))
+	runFile := filepath.Join(baseDir, "data", "faaspot", "run.yml")
+
+	runData, err := os.ReadFile(runFile)
 	if err != nil {
-		return nil // Config missing, nothing to register
+		return fmt.Errorf("run.yml not found: %w", err)
 	}
 
-	var potCfg models.PotConfig
-	if err := yaml.Unmarshal(potData, &potCfg); err != nil {
+	var rc models.RunConfig
+	if err := yaml.Unmarshal(runData, &rc); err != nil {
 		return err
 	}
 
-	var coreHandler http.Handler
-
-	if potCfg.Type == "static" {
-		// Static file handler
-		coreHandler = resource.NewStaticHandler(r.RepoRoot, org, name, potCfg.Root)
-	} else if potCfg.Type == "exe" && includeExe {
-		// Read runtime port
-		runFile := filepath.Join(baseDir, "data", "faaspot", "run.yml")
-		runData, err := os.ReadFile(runFile)
-		if err != nil {
-			return nil // No runtime, skip exe routes
-		}
-
-		var rc models.RunConfig
-		if err := yaml.Unmarshal(runData, &rc); err != nil {
-			return err
-		}
-
-		if rc.Runtime.Port == 0 {
-			return nil // No port assigned
-		}
-
-		target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", rc.Runtime.Port))
-		coreHandler = httputil.NewSingleHostReverseProxy(target)
-	} else {
-		return nil // Unknown type or exe without includeExe flag
+	if rc.Runtime.Port == 0 {
+		return fmt.Errorf("no port assigned")
 	}
 
+	// 3. 创建 Reverse Proxy Handler
+	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", rc.Runtime.Port))
+	handler := httputil.NewSingleHostReverseProxy(target)
+
+	// 4. 注册三个路由
+	r.registerThreeRoutesInternal(org, name, handler)
+	return nil
+}
+
+// registerThreeRoutesInternal 注册 /pot、/api、/web 三个前缀路由
+func (r *Router) registerThreeRoutesInternal(org, name string, handler http.Handler) {
 	var registeredKeys []string
 
-	// Register three standard routes with different strip rules
-	// 1. /pot/{org}/{name}/* -> strip /pot/{org}/{name}
+	// 1. /pot/{org}/{name}/* -> 去掉 /pot/{org}/{name}
 	potPrefix := fmt.Sprintf("/pot/%s/%s", org, name)
-	r.pathRoutes[potPrefix] = stripPrefixHandler(potPrefix, coreHandler)
+	r.pathRoutes[potPrefix] = stripPrefixHandler(potPrefix, handler)
 	registeredKeys = append(registeredKeys, "PATH:"+potPrefix)
+	log.Printf("[Router] Registered route: %s", potPrefix)
 
-	// 2. /api/{org}/{name}/* -> strip /{org}/{name}, keep /api
+	// 2. /api/{org}/{name}/* -> 去掉 /{org}/{name}
 	apiPrefix := fmt.Sprintf("/api/%s/%s", org, name)
-	r.pathRoutes[apiPrefix] = stripOrgNameHandler(org, name, coreHandler)
+	r.pathRoutes[apiPrefix] = stripOrgNameHandler(org, name, handler)
 	registeredKeys = append(registeredKeys, "PATH:"+apiPrefix)
+	log.Printf("[Router] Registered route: %s", apiPrefix)
 
-	// 3. /web/{org}/{name}/* -> strip /{org}/{name}, keep /web
+	// 3. /web/{org}/{name}/* -> 去掉 /{org}/{name}
 	webPrefix := fmt.Sprintf("/web/%s/%s", org, name)
-	r.pathRoutes[webPrefix] = stripOrgNameHandler(org, name, coreHandler)
+	r.pathRoutes[webPrefix] = stripOrgNameHandler(org, name, handler)
 	registeredKeys = append(registeredKeys, "PATH:"+webPrefix)
+	log.Printf("[Router] Registered route: %s", webPrefix)
 
 	r.sandboxRoutes[fmt.Sprintf("%s/%s", org, name)] = registeredKeys
-	return nil
 }
 
 // stripPrefixHandler removes the entire prefix from the path
@@ -165,15 +174,7 @@ func stripOrgNameHandler(org, name string, handler http.Handler) http.Handler {
 	})
 }
 
-// UpdateExeRoutes updates routes for exe type (with runtime port)
-func (r *Router) UpdateExeRoutes(org, name string) error {
-	return r.UpdateRoutes(org, name, true)
-}
 
-// UpdateStaticRoutes updates routes for static type only
-func (r *Router) UpdateStaticRoutes(org, name string) error {
-	return r.UpdateRoutes(org, name, false)
-}
 
 // RemoveRoutes removes all routes for a sandbox
 func (r *Router) RemoveRoutes(org, name string) {

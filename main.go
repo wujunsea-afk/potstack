@@ -154,6 +154,9 @@ func runService(ctx context.Context, us service.IUserService, rs service.IRepoSe
 	// CDN 静态资源
 	r.GET("/cdn/*path", resource.CDNProcessor())
 
+	// ⚠️ 重要：特殊路径必须在动态路由前注册
+	r.POST("/pot/potstack/router/refresh", router.RefreshHandler(dynamicRouter))
+
 	// 动态路由：/pot/{org}/{name}/* -> 去掉 /pot/{org}/{name}
 	r.Any("/pot/:org/:name/*path", func(c *gin.Context) {
 		dynamicRouter.ServeHTTP(c.Writer, c.Request)

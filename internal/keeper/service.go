@@ -1,17 +1,25 @@
 package keeper
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
-	"potstack/internal/models"
-	"potstack/internal/router"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-git/go-git/v5"
+	"potstack/config"
+	"potstack/internal/git"
+	"potstack/internal/models"
+	"potstack/internal/router"
+
+	gitlib "github.com/go-git/go-git/v5"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,7 +60,7 @@ func (s *SandboxManager) SetPotProvider(p PotProvider) {
 
 // StartKeeper is the main loop
 func (s *SandboxManager) StartKeeper() {
-	fmt.Println("Keeper started. Monitoring sandboxes...")
+	log.Println("Keeper started. Monitoring sandboxes...")
 
 	// Initial Scan
 	s.reconcile()
@@ -66,7 +74,7 @@ func (s *SandboxManager) StartKeeper() {
 		case <-ticker.C:
 			s.monitor()
 		case <-s.stopChan:
-			fmt.Println("Keeper stopped.")
+			log.Println("Keeper stopped.")
 			return
 		}
 	}
@@ -80,35 +88,59 @@ func (s *SandboxManager) reconcile() {
 
 	list := s.PotProvider.GetInstalledPots()
 	for _, sb := range list {
-		// Always update routes for installed sandboxes
-		s.Router.UpdateStaticRoutes(sb.Org, sb.Name)
+		// 1. 从 Git 读取 pot.yml
+		var potCfg models.PotConfig
+		if err := git.ReadPotYml(s.RepoRoot, sb.Org, sb.Name, &potCfg); err != nil {
+			continue // 没有 pot.yml，跳过
+		}
 
-		run, err := s.loadRunConfig(sb.Org, sb.Name)
-		if err != nil {
-			// run.yml missing. Initialize runtime.
-			fmt.Printf("Initializing sandbox %s/%s\n", sb.Org, sb.Name)
-			if err := s.createRuntime(sb.Org, sb.Name); err != nil {
-				fmt.Printf("Failed to create runtime: %v\n", err)
-				continue
-			}
-			s.Start(sb.Org, sb.Name)
+		// 2. 根据类型处理
+		if potCfg.Type == "static" {
+			// Static 类型：直接刷新路由即可
+			s.refreshRoute(sb.Org, sb.Name)
 			continue
 		}
 
-		if run.TargetStatus == models.RunStatusRunning {
-			s.mu.RLock()
-			_, running := s.runningInstances[fmt.Sprintf("%s/%s", sb.Org, sb.Name)]
-			s.mu.RUnlock()
-
-			if !running {
-				s.Start(sb.Org, sb.Name)
-			} else {
-				// If running, ensure EXE routes are up-to-date
-				s.Router.UpdateExeRoutes(sb.Org, sb.Name)
+		if potCfg.Type == "exe" {
+			// Exe 类型：需要管理进程
+			run, err := s.loadRunConfig(sb.Org, sb.Name)
+			if err != nil {
+				// 初始化运行时
+				log.Printf("Initializing sandbox %s/%s", sb.Org, sb.Name)
+				if err := s.createRuntime(sb.Org, sb.Name); err != nil {
+					log.Printf("Failed to create runtime: %v", err)
+					continue
+				}
+				if err := s.Start(sb.Org, sb.Name); err != nil {
+					log.Printf("Failed to start sandbox %s/%s: %v", sb.Org, sb.Name, err)
+				}
+				continue
 			}
-		} else {
-			// If stopped, ensure we fallback to static only
-			s.Router.UpdateStaticRoutes(sb.Org, sb.Name)
+
+			// 根据 TargetStatus 处理
+			if run.TargetStatus == models.RunStatusRunning {
+				s.mu.RLock()
+				_, running := s.runningInstances[fmt.Sprintf("%s/%s", sb.Org, sb.Name)]
+				s.mu.RUnlock()
+
+				if !running {
+					if err := s.Start(sb.Org, sb.Name); err != nil {
+						log.Printf("Failed to start sandbox %s/%s: %v", sb.Org, sb.Name, err)
+					}
+				} else {
+					// 已经在运行，确保路由是最新的
+					s.refreshRoute(sb.Org, sb.Name)
+				}
+			} else {
+				// TargetStatus 是 stopped，确保进程已停止
+				s.mu.RLock()
+				_, running := s.runningInstances[fmt.Sprintf("%s/%s", sb.Org, sb.Name)]
+				s.mu.RUnlock()
+
+				if running {
+					s.Stop(sb.Org, sb.Name) // 内部会调用 refreshRoute
+				}
+			}
 		}
 	}
 }
@@ -139,7 +171,7 @@ func (s *SandboxManager) createRuntime(org, name string) error {
 	os.RemoveAll(programDir)
 
 	// Clone to programDir
-	_, err := git.PlainClone(programDir, false, &git.CloneOptions{
+	_, err := gitlib.PlainClone(programDir, false, &gitlib.CloneOptions{
 		URL: bareRepoPath,
 	})
 	if err != nil {
@@ -177,18 +209,37 @@ func (s *SandboxManager) monitor() {
 	}
 }
 
+// refreshRoute 调用 Router 刷新接口更新路由
+func (s *SandboxManager) refreshRoute(org, name string) {
+	url := fmt.Sprintf("http://localhost:%s/pot/potstack/router/refresh", config.HTTPPort)
+
+	payload := map[string]string{"org": org, "name": name}
+	jsonData, _ := json.Marshal(payload)
+
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to refresh route for %s/%s: %v", org, name, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Refresh route failed for %s/%s: status %d, body: %s", org, name, resp.StatusCode, body)
+	} else {
+		log.Printf("Route refreshed for %s/%s", org, name)
+	}
+}
+
 // SignalUpdate is called by Loader
 func (s *SandboxManager) SignalUpdate(org, name string) {
-	fmt.Printf("Received update signal for %s/%s\n", org, name)
+	log.Printf("Received update signal for %s/%s", org, name)
 
 	// Update Runtime code
 	if err := s.createRuntime(org, name); err != nil {
-		fmt.Printf("Failed to update runtime: %v\n", err)
+		log.Printf("Failed to update runtime: %v", err)
 		return
 	}
-
-	// Ensure routes updated
-	s.Router.UpdateStaticRoutes(org, name)
 
 	// Restart if running
 	s.Stop(org, name)
@@ -202,29 +253,21 @@ func (s *SandboxManager) Start(org, name string) error {
 
 	key := fmt.Sprintf("%s/%s", org, name)
 
-	// 1. Path Calculation
-	bareRepoPath := filepath.Join(s.RepoRoot, org, fmt.Sprintf("%s.git", name))
-	sandboxRoot := filepath.Join(bareRepoPath, "data", "faaspot")
-	programDir := filepath.Join(sandboxRoot, "program")
-
-	// 2. Parse pot.yml
-	configFile := filepath.Join(programDir, "pot.yml")
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		return fmt.Errorf("config not found: %w", err)
-	}
-
+	// 1. 从 Git 读取 pot.yml 判断类型
 	var potCfg models.PotConfig
-	if err := yaml.Unmarshal(data, &potCfg); err != nil {
-		return fmt.Errorf("failed to parse pot.yml: %w", err)
+	if err := git.ReadPotYml(s.RepoRoot, org, name, &potCfg); err != nil {
+		return fmt.Errorf("pot.yml not found: %w", err)
 	}
 
 	// Only exe type needs to start a process
 	if potCfg.Type != "exe" {
-		// For static type, just update routes
-		s.Router.UpdateStaticRoutes(org, name)
-		return nil
+		return fmt.Errorf("not an exe type sandbox")
 	}
+
+	// 2. Path Calculation
+	bareRepoPath := filepath.Join(s.RepoRoot, org, fmt.Sprintf("%s.git", name))
+	sandboxRoot := filepath.Join(bareRepoPath, "data", "faaspot")
+	programDir := filepath.Join(sandboxRoot, "program")
 
 	// 3. Prepare Run Config
 	rc := models.RunConfig{
@@ -265,6 +308,13 @@ func (s *SandboxManager) Start(org, name string) error {
 
 	// 5. Launch pot.exe
 	cmdPath := filepath.Join(programDir, "pot.exe")
+	// 转换为绝对路径
+	absCmdPath, err := filepath.Abs(cmdPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+	cmdPath = absCmdPath
+
 	if _, err := os.Stat(cmdPath); os.IsNotExist(err) {
 		return fmt.Errorf("pot.exe not found at %s", cmdPath)
 	}
@@ -274,7 +324,14 @@ func (s *SandboxManager) Start(org, name string) error {
 
 	// Env
 	env := os.Environ()
+	// 内置环境变量
+	dataPath := filepath.Join(sandboxRoot, "data")
+	env = append(env, fmt.Sprintf("DATA_PATH=%s", dataPath))
+	env = append(env, fmt.Sprintf("PROGRAM_PATH=%s", programDir))
+	env = append(env, fmt.Sprintf("LOG_PATH=%s", filepath.Join(sandboxRoot, "log")))
+	env = append(env, fmt.Sprintf("POTSTACK_BASE_URL=http://localhost:%s", config.HTTPPort))
 	env = append(env, fmt.Sprintf("SU_SERVER_ADDR=%s", addr))
+	// 用户自定义环境变量
 	for _, e := range potCfg.Env {
 		env = append(env, fmt.Sprintf("%s=%s", e.Name, e.Value))
 	}
@@ -289,18 +346,22 @@ func (s *SandboxManager) Start(org, name string) error {
 	// 6. Save Run Config
 	s.saveRunConfig(org, name, &rc)
 
-	// 7. Register Router (EXE Routes)
-	s.Router.UpdateExeRoutes(org, name)
+
 
 	s.runningInstances[key] = &Instance{
 		Org:  org,
 		Name: name,
 		Cmd:  jobCmd,
 	}
-	fmt.Printf("Started sandbox %s (port %d)\n", key, port)
+	log.Printf("Started sandbox %s (port %d)", key, port)
 
 	// Monitor death for restart
 	go s.watchProcess(key, jobCmd)
+
+	// 解锁后刷新路由
+	s.mu.Unlock()
+	s.refreshRoute(org, name)
+	s.mu.Lock() // 重新加锁以配合 defer Unlock
 
 	return nil
 }
@@ -327,16 +388,20 @@ func (s *SandboxManager) Stop(org, name string) error {
 	rc.TargetStatus = models.RunStatusStopped
 	s.saveRunConfig(org, name, rc)
 
-	// Downgrade to Static only
-	s.Router.UpdateStaticRoutes(org, name)
 
-	fmt.Printf("Stopped sandbox %s\n", key)
+
+	// 解锁后刷新路由
+	s.mu.Unlock()
+	s.refreshRoute(org, name)
+	s.mu.Lock() // 重新加锁以配合 defer Unlock
+
+	log.Printf("Stopped sandbox %s", key)
 	return nil
 }
 
 func (s *SandboxManager) watchProcess(key string, cmd *JobCmd) {
 	state, err := cmd.Process.Wait()
-	fmt.Printf("Sandbox %s exited: %v %v\n", key, state, err)
+	log.Printf("Sandbox %s exited: %v %v", key, state, err)
 
 	s.mu.Lock()
 	delete(s.runningInstances, key)
@@ -348,7 +413,7 @@ func (s *SandboxManager) watchProcess(key string, cmd *JobCmd) {
 		org, name := parts[0], parts[1]
 		rc, _ := s.loadRunConfig(org, name)
 		if rc != nil && rc.TargetStatus == models.RunStatusRunning {
-			fmt.Printf("Auto-restarting %s...\n", key)
+			log.Printf("Auto-restarting %s...", key)
 			time.Sleep(1 * time.Second) // backoff
 			s.Start(org, name)
 		}
