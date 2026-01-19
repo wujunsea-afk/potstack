@@ -58,8 +58,39 @@ func (s *SandboxManager) SetPotProvider(p PotProvider) {
 	s.PotProvider = p
 }
 
+// KeeperMode 定义 Keeper 运行模式
+type KeeperMode int
+
+const (
+	KeeperModeBuiltin  KeeperMode = iota // 模式一：内置完整 Keeper
+	KeeperModeExternal                   // 模式二：外置 Keeper Pot
+)
+
+// DetectMode 检测 Keeper 运行模式
+func (s *SandboxManager) DetectMode() KeeperMode {
+	var potCfg models.PotConfig
+	err := git.ReadPotYml(s.RepoRoot, "potstack", "keeper", &potCfg)
+	if err != nil || potCfg.Type != "exe" {
+		return KeeperModeBuiltin
+	}
+	return KeeperModeExternal
+}
+
 // StartKeeper is the main loop
 func (s *SandboxManager) StartKeeper() {
+	mode := s.DetectMode()
+
+	if mode == KeeperModeBuiltin {
+		log.Println("Keeper mode: builtin")
+		s.runBuiltinKeeper()
+	} else {
+		log.Println("Keeper mode: external")
+		s.runExternalKeeper()
+	}
+}
+
+// runBuiltinKeeper 模式一：内置完整 Keeper
+func (s *SandboxManager) runBuiltinKeeper() {
 	log.Println("Keeper started. Monitoring sandboxes...")
 
 	// Initial Scan
@@ -76,6 +107,48 @@ func (s *SandboxManager) StartKeeper() {
 		case <-s.stopChan:
 			log.Println("Keeper stopped.")
 			return
+		}
+	}
+}
+
+// runExternalKeeper 模式二：只管理 keeper pot
+func (s *SandboxManager) runExternalKeeper() {
+	log.Println("External keeper mode. Only managing potstack/keeper...")
+
+	// 初始启动 keeper pot
+	s.ensureKeeperPotRunning()
+
+	// 监控 keeper pot
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.ensureKeeperPotRunning()
+		case <-s.stopChan:
+			log.Println("Keeper stopped.")
+			return
+		}
+	}
+}
+
+// ensureKeeperPotRunning 确保 keeper pot 运行
+func (s *SandboxManager) ensureKeeperPotRunning() {
+	key := "potstack/keeper"
+
+	s.mu.RLock()
+	_, running := s.runningInstances[key]
+	s.mu.RUnlock()
+
+	if !running {
+		log.Println("Starting keeper pot...")
+		if err := s.createRuntime("potstack", "keeper"); err != nil {
+			log.Printf("Failed to create keeper runtime: %v", err)
+			return
+		}
+		if err := s.Start("potstack", "keeper"); err != nil {
+			log.Printf("Failed to start keeper pot: %v", err)
 		}
 	}
 }
