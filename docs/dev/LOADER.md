@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS user (
     email       TEXT DEFAULT '',
     full_name   TEXT DEFAULT '',
     avatar_url  TEXT DEFAULT '',
+    public_key  TEXT DEFAULT '',
     is_admin    INTEGER DEFAULT 0,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -75,6 +76,7 @@ CREATE INDEX idx_user_username ON user(username);
 | email | TEXT | 邮箱 |
 | full_name | TEXT | 全名 |
 | avatar_url | TEXT | 头像 URL |
+| public_key | TEXT | 锁定的公钥 (Hex) |
 | is_admin | INTEGER | 是否管理员 |
 | created_at | DATETIME | 创建时间 |
 | updated_at | DATETIME | 更新时间 |
@@ -266,14 +268,18 @@ Status: 204 No Content
   4. 部署组件
      4.1 解压 potstack-base.zip
          ├── install.yml
-         ├── potstack.ppk
-         └── VERSION
+         └── potstack.ppk
 
      4.2 读取 install.yml
          packages:
            - potstack.ppk
 
      4.3 对于每个 ppk 文件：
+         ├── 完整性校验 (Self-Check): 验证 PPK 头部签名
+         ├── 身份验证 (Authenticity):
+         │   ├── TOFU: 若用户不存在，创建用户并锁定公钥
+         │   └── Pinning: 若用户已存在，校验公钥是否匹配
+         │
          ├── 解压 potstack.ppk
          │   └── potstack/
          │       ├── keeper/
@@ -281,11 +287,28 @@ Status: 204 No Content
          │       └── repo/
          │
          ├── 遍历 owner/potname 目录
+         ├── 读取 pot.yml，若有 docker 字段则拉取镜像
+         │   └── docker pull {image} && docker tag {image} potstack/{owner}/{potname}:latest
          ├── 确保用户和仓库存在
          └── 推送到 owner/potname.git
 
   5. 初始化完成
 ```
+
+### 6.0 Docker 镜像拉取
+
+若 `pot.yml` 中包含 `docker` 字段，Loader 会在推送代码前拉取镜像：
+
+```yaml
+# pot.yml 示例
+type: "exe"
+docker: "nginx:1.25"
+```
+
+**行为**：
+1. 检查本地是否已存在 `potstack/{owner}/{potname}:latest`
+2. 若不存在，执行 `docker pull` + `docker tag`
+3. 拉取失败则整个部署失败（原子性）
 
 ### 6.1 potstack-base.zip 结构
 

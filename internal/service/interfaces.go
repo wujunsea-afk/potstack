@@ -11,6 +11,7 @@ type IUserService interface {
 	CreateUser(ctx context.Context, username, email, password string) (*db.User, error)
 	DeleteUser(ctx context.Context, username string) error
 	GetUser(ctx context.Context, username string) (*db.User, error)
+	SetUserPublicKey(ctx context.Context, username, publicKey string) error
 }
 
 // IRepoService 定义仓库服务接口

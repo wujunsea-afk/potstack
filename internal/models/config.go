@@ -6,9 +6,10 @@ type PotConfig struct {
 	Version string   `yaml:"version"`
 	Owner   string   `yaml:"owner"`
 	PotName string   `yaml:"potname"`
-	Type    string   `yaml:"type"`           // "exe" or "static"
-	Root    string   `yaml:"root,omitempty"` // static 类型专用
-	Env     []EnvVar `yaml:"env,omitempty"`  // exe 类型专用
+	Type    string   `yaml:"type"`             // "exe" or "static"
+	Root    string   `yaml:"root,omitempty"`   // static 类型专用
+	Env     []EnvVar `yaml:"env,omitempty"`    // exe 类型专用
+	Docker  string   `yaml:"docker,omitempty"` // 远程 Docker 镜像地址
 }
 
 // EnvVar definition

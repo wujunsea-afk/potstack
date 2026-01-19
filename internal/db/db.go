@@ -96,6 +96,7 @@ func initTables() error {
 			email       TEXT DEFAULT '',
 			full_name   TEXT DEFAULT '',
 			avatar_url  TEXT DEFAULT '',
+			public_key  TEXT DEFAULT '',
 			is_admin    INTEGER DEFAULT 0,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP

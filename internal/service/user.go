@@ -69,3 +69,7 @@ func (s *UserService) GetUser(ctx context.Context, username string) (*db.User, e
 
 	return user, nil
 }
+
+func (s *UserService) SetUserPublicKey(ctx context.Context, username, publicKey string) error {
+	return db.SetUserPublicKey(username, publicKey)
+}

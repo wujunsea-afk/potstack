@@ -13,6 +13,7 @@ type User struct {
 	Email     string    `json:"email"`
 	FullName  string    `json:"full_name"`
 	AvatarURL string    `json:"avatar_url"`
+	PublicKey string    `json:"public_key"`
 	IsAdmin   bool      `json:"is_admin,omitempty"`
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
@@ -36,10 +37,10 @@ func CreateUser(username, email, fullName string) (*User, error) {
 func GetUserByID(id int64) (*User, error) {
 	user := &User{}
 	err := db.QueryRow(
-		`SELECT id, username, email, full_name, avatar_url, is_admin, created_at, updated_at 
+		`SELECT id, username, email, full_name, avatar_url, public_key, is_admin, created_at, updated_at 
 		 FROM user WHERE id = ?`, id,
 	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName,
-		&user.AvatarURL, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
+		&user.AvatarURL, &user.PublicKey, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -56,10 +57,10 @@ func GetUserByID(id int64) (*User, error) {
 func GetUserByUsername(username string) (*User, error) {
 	user := &User{}
 	err := db.QueryRow(
-		`SELECT id, username, email, full_name, avatar_url, is_admin, created_at, updated_at 
+		`SELECT id, username, email, full_name, avatar_url, public_key, is_admin, created_at, updated_at 
 		 FROM user WHERE username = ?`, username,
 	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName,
-		&user.AvatarURL, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
+		&user.AvatarURL, &user.PublicKey, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -84,6 +85,15 @@ func UpdateUser(id int64, email, fullName, avatarURL string) error {
 		`UPDATE user SET email = ?, full_name = ?, avatar_url = ?, updated_at = CURRENT_TIMESTAMP 
 		 WHERE id = ?`,
 		email, fullName, avatarURL, id,
+	)
+	return err
+}
+
+// SetUserPublicKey 设置用户公钥
+func SetUserPublicKey(username, publicKey string) error {
+	_, err := db.Exec(
+		`UPDATE user SET public_key = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?`,
+		publicKey, username,
 	)
 	return err
 }

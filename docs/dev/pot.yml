@@ -16,3 +16,6 @@ env:
     value: "dev"
   - name: DB_HOST
     value: "192.168.1.10"
+
+# Docker 镜像（可选，Loader 会在部署时拉取）
+# docker: "nginx:1.25"

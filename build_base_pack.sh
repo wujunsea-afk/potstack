@@ -24,37 +24,44 @@ if [ ! -x "$POTPACKER" ]; then
     exit 1
 fi
 
-# 检查密钥是否存在（不再自动生成）
+# 检查密钥是否存在，不存在则自动生成
 if [ ! -f "${KEY_NAME}.key" ]; then
-    echo "Error: Signing key '${KEY_NAME}.key' not found!"
-    echo "Please generate it first:"
-    echo "  $POTPACKER keygen -o $KEY_NAME"
-    exit 1
+    echo "Signing key '${KEY_NAME}.key' not found. Generating new key..."
+    "$POTPACKER" keygen -o "$KEY_NAME"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to generate key"
+        exit 1
+    fi
+    echo "Key generated: ${KEY_NAME}.key"
 fi
 
 # 清理并创建目录
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# 生成批量打包配置（路径相对于 batch.yaml 所在目录）
-# 1. 写入头部配置
-cat > "$OUTPUT_DIR/batch.yaml" << EOF
-key: "../${KEY_NAME}.key"
-output_dir: "."
-packages:
-EOF
-
-# 2. 自动扫描 components 目录下的所有子目录
+# 遍历 components 目录逐个打包
 COMPONENTS_ROOT="components"
 FOUND_COUNT=0
 
 if [ -d "$COMPONENTS_ROOT" ]; then
     for dir in "$COMPONENTS_ROOT"/*; do
         if [ -d "$dir" ]; then
-            # 路径相对于 dist/batch.yaml，所以需要加 ../
-            # 例如: components/potstack -> ../components/potstack
-            echo "  - path: \"../$dir\"" >> "$OUTPUT_DIR/batch.yaml"
-            echo "Found component: $dir"
+            owner=$(basename "$dir")
+            echo "------------------------------------------"
+            echo "Packing component owner: $owner"
+            
+            # 使用新版命令：单路径扫描打包
+            # -p: 扫描路径 (例如 components/potstack)
+            # -k: 密钥
+            # -o: 输出文件 (例如 dist/potstack.ppk)
+            output_file="$OUTPUT_DIR/${owner}.ppk"
+            
+            if ! "$POTPACKER" -p "$dir" -k "${KEY_NAME}.key" -o "$output_file"; then
+                echo "Error: Failed to pack '$owner'"
+                exit 1
+            fi
+            
+            echo "Packed: $output_file"
             FOUND_COUNT=$((FOUND_COUNT + 1))
         fi
     done
@@ -65,13 +72,6 @@ fi
 
 if [ "$FOUND_COUNT" -eq 0 ]; then
     echo "Error: No components found in '$COMPONENTS_ROOT'!"
-    exit 1
-fi
-
-# 执行批量打包
-echo "Running potpacker batch mode..."
-if ! "$POTPACKER" -c "$OUTPUT_DIR/batch.yaml"; then
-    echo "Error: Batch packing failed"
     exit 1
 fi
 
@@ -97,7 +97,7 @@ done
 echo "$VERSION" > "$OUTPUT_DIR/VERSION"
 
 # 清理临时配置
-rm -f "$OUTPUT_DIR/batch.yaml"
+
 
 # 打包
 echo "Creating zip package..."

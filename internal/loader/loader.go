@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"potstack/internal/docker"
+	"potstack/internal/models"
 	"potstack/internal/service"
 
 	"github.com/go-git/go-git/v5"
@@ -33,7 +34,8 @@ type Config struct {
 	Token         string       // 认证令牌
 	BasePackPath  string       // 基础包路径（zip 文件）
 	TempDir       string       // 临时目录
-	PublicKeyPath string       // 公钥文件路径（可选，如果为 "" 则从 zip 包中 potstack_release.pub 读取）
+	DataDir       string       // 数据目录 (用于查找公钥等)
+	PublicKeyPath string       // 公钥文件路径（可选，优先级最高）
 	HTTPClient    *http.Client // 自定义 HTTP 客户端（可选）
 }
 
@@ -41,7 +43,6 @@ type Config struct {
 type Loader struct {
 	config      *Config
 	client      *http.Client
-	pubKey      ed25519.PublicKey // 验证 PPK 签名用
 	userService service.IUserService
 	repoService service.IRepoService
 }
@@ -73,36 +74,7 @@ func New(cfg *Config, us service.IUserService, rs service.IRepoService) *Loader 
 		repoService: rs,
 	}
 
-	// 尝试加载公钥 (如果配置了路径)
-	if cfg.PublicKeyPath != "" {
-		if key, err := loadPublicKey(cfg.PublicKeyPath); err != nil {
-			log.Printf("Warning: failed to load public key from %s: %v", cfg.PublicKeyPath, err)
-		} else {
-			l.pubKey = key
-			log.Println("Loaded public key from config")
-		}
-	}
-
 	return l
-}
-
-// loadPublicKey 读取 PEM 格式的 ED25519 公钥
-func loadPublicKey(path string) (ed25519.PublicKey, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	block, _ := pem.Decode(data)
-	if block == nil || block.Type != "POTPACKER PUBLIC KEY" {
-		return nil, fmt.Errorf("invalid public key format")
-	}
-
-	if len(block.Bytes) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("invalid public key size")
-	}
-
-	return ed25519.PublicKey(block.Bytes), nil
 }
 
 // Initialize 初始化系统
@@ -226,20 +198,6 @@ func (l *Loader) deployComponents() error {
 		return fmt.Errorf("failed to unzip base pack: %w", err)
 	}
 
-	// 1.5 尝试从 base pack 加载公钥 (如果尚未加载)
-	if len(l.pubKey) == 0 {
-		// 尝试常见的文件名
-		candidates := []string{"potstack_release.pub", "release.pub"}
-		for _, name := range candidates {
-			keyPath := filepath.Join(tempDir, name)
-			if key, err := loadPublicKey(keyPath); err == nil {
-				l.pubKey = key
-				log.Printf("Loaded public key from base pack: %s", name)
-				break
-			}
-		}
-	}
-
 	// 2. 读取 install.yml
 	manifest, err := l.loadInstallManifest(filepath.Join(tempDir, "install.yml"))
 	if err != nil {
@@ -290,45 +248,88 @@ func (l *Loader) deployPPK(ppkPath string) error {
 		return fmt.Errorf("invalid ppk header: %w", err)
 	}
 
-	// 2. 读取 7z 数据
+	// 2. 读取 zip 数据
 	// log.Printf("Reading PPK content, len: %d", header.ContentLen)
 	content := make([]byte, header.ContentLen)
 	if _, err := io.ReadFull(f, content); err != nil {
 		return fmt.Errorf("failed to read ppk content: %w", err)
 	}
 
-	// 3. 验证签名
-	if len(l.pubKey) > 0 {
-		if err := header.VerifySignature(content, l.pubKey); err != nil {
-			return fmt.Errorf("signature verification failed: %w", err)
-		}
-		log.Println("Signature verified successfully")
-	} else {
-		log.Println("Warning: No public key loaded, skipping signature verification")
+	// 3. 验证签名与身份锁定 (TOFU + Pinning)
+	// 解析出 Owner (这里先简单假设 owner 为 path 的第一级目录，实际应该解压后看)
+	// 由于我们还未解压，无法确切知道 owner。但 PotPacker 打包规范通常是根目录下即为 owner 目录。
+	// 不过，为了安全，我们最好先验证签名再解压。
+	// 但是验证签名需要公钥。公钥在 Header 里。
+	// 我们先用 Header 里的公钥验证签名（确保自洽）。
+	if err := header.VerifySignature(content, ed25519.PublicKey(header.PublicKey[:])); err != nil {
+		return fmt.Errorf("signature verification failed (self-check): %w", err)
 	}
 
-	// 4. 解压 Zip 到临时目录
+	// 临时解压以获取 Owner
 	ppkTempDir := ppkPath + "_extracted"
 	os.RemoveAll(ppkTempDir)
-	if err := os.MkdirAll(ppkTempDir, 0755); err != nil {
-		return err
-	}
 	defer os.RemoveAll(ppkTempDir)
 
+	// Create reader for zip
 	r, err := zip.NewReader(bytes.NewReader(content), int64(len(content)))
 	if err != nil {
 		return fmt.Errorf("failed to open zip reader: %w", err)
 	}
-
+	// Extract to temp to find owner
 	if err := extractZip(r, ppkTempDir); err != nil {
 		return fmt.Errorf("failed to extract zip content: %w", err)
 	}
 
-	// 5. 遍历 owner 目录并推送
+	// 扫描 Owner
 	ownerEntries, err := os.ReadDir(ppkTempDir)
 	if err != nil {
 		return err
 	}
+
+	for _, ownerEntry := range ownerEntries {
+		if !ownerEntry.IsDir() {
+			continue
+		}
+		owner := ownerEntry.Name()
+
+		// A. 获取或创建用户
+		user, err := l.userService.GetUser(context.Background(), owner)
+		if errors.Is(err, service.ErrUserNotFound) {
+			// 自动创建用户 (TOFU User)
+			user, err = l.userService.CreateUser(context.Background(), owner, owner+"@potstack.local", "")
+			if err != nil {
+				if errors.Is(err, service.ErrUserAlreadyExists) {
+					user, err = l.userService.GetUser(context.Background(), owner)
+				} else {
+					return fmt.Errorf("failed to create user %s: %w", owner, err)
+				}
+			}
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed to get user %s: %w", owner, err)
+		}
+
+		// 公钥锁定校验
+		headerPubKeyStr := fmt.Sprintf("%x", header.PublicKey) // 转为 hex 存储
+
+		if user.PublicKey == "" {
+			// TOFU: 首次信任，或者是老用户迁移
+			log.Printf("TOFU: Trusting public key for owner %s", owner)
+			if err := l.userService.SetUserPublicKey(context.Background(), owner, headerPubKeyStr); err != nil {
+				return fmt.Errorf("failed to set public key for %s: %w", owner, err)
+			}
+		} else {
+			// Pinning: 校验
+			if user.PublicKey != headerPubKeyStr {
+				return fmt.Errorf("SECURITY ERROR: Public key mismatch for owner %s! Expected: %s, Got: %s",
+					owner, user.PublicKey, headerPubKeyStr)
+			}
+			log.Printf("Key pinning verified for owner %s", owner)
+		}
+	}
+
+	// 4. 部署组件 (Deploy)
 
 	for _, ownerEntry := range ownerEntries {
 		if !ownerEntry.IsDir() {
@@ -349,6 +350,21 @@ func (l *Loader) deployPPK(ppkPath string) error {
 			}
 			potname := potEntry.Name()
 			potPath := filepath.Join(ownerPath, potname)
+
+			// 检查并拉取 Docker 镜像（在推送代码前）
+			potYmlPath := filepath.Join(potPath, "pot.yml")
+			if potYmlData, err := os.ReadFile(potYmlPath); err == nil {
+				var potCfg models.PotConfig
+				if yaml.Unmarshal(potYmlData, &potCfg) == nil && potCfg.Docker != "" {
+					localTag := fmt.Sprintf("potstack/%s/%s:latest", owner, potname)
+					if !docker.ImageExists(localTag) {
+						log.Printf("Pulling docker image: %s -> %s", potCfg.Docker, localTag)
+						if err := docker.PullAndTag(potCfg.Docker, localTag); err != nil {
+							return fmt.Errorf("failed to pull docker image for %s/%s: %w", owner, potname, err)
+						}
+					}
+				}
+			}
 
 			// 确保用户和仓库存在
 			l.ensureUserAndRepo(owner, potname)

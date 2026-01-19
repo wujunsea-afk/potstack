@@ -15,6 +15,7 @@ import (
 	"potstack/internal/service"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/glebarez/go-sqlite" // SQLite 驱动
 	"github.com/stretchr/testify/assert"
 )
 

@@ -18,25 +18,27 @@
 - **签名验证**: 使用 `crypto/ed25519` 添加了 `VerifySignature` 逻辑。
 - **解压缩**: 从 `sevenzip` 库切换到了标准的 `archive/zip` 库。
 - **部署流程**:
+- **部署流程**:
     1. 解压 `potstack-base.zip`。
-    2. 从基础包中加载公钥 (`potstack_release.pub`)。
-    3. 解析 `install.yml` 清单。
-    4. 对每个 PPK 文件：
-        - 验证头部和签名。
+    2. 解析 `install.yml` 清单。
+    3. 对每个 PPK 文件：
+        - **完整性校验**: 使用 PPK 头部自带的公钥验证签名。
+        - **身份验证**: 使用 TOFU + Key Pinning 机制（基于数据库）验证 Owner 身份。
         - 解压 Zip 内容。
         - 将组件 (`repo`, `loader`, `keeper`) 推送到内部 Git/Gitea。
 
 ### 3. 构建流程 (`build_base_pack.sh`)
 - 如果密钥缺失，自动生成密钥对。
 - 使用 `potpacker -k` 对包进行签名。
-- 将公钥包含在最终的 `potstack-base.zip` 中。
+- 生成最终的 `potstack-base.zip`（仅包含 PPK，无外部公钥文件）。
 
 ## 验证
 端到端测试确认：
 - `potpacker` 正确生成了经过签名的 PPK 文件。
 - `potStack` Loader 成功地：
-    - 加载了公钥。
-    - 验证了 PPK 签名。
+    - 使用头部密钥验证了完整性。
+    - 通过 TOFU 机制首次信任了新 Owner。
+    - 拒绝了密钥不匹配的包更新。
     - 解压并部署了 Git 仓库。
 
 ## 下一步
