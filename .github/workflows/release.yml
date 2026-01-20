@@ -60,7 +60,7 @@ jobs:
           cp README.md dist/linux/
           
           cd dist/linux
-          tar -czvf "../../${ASSET_NAME}.tar.gz" .
+          tar -czvf "../../${ASSET_NAME}.tar.gz" *
           echo "LINUX_ASSET=${ASSET_NAME}.tar.gz" >> $GITHUB_ENV
 
       # 3. 构建 Windows 版本
@@ -87,7 +87,7 @@ jobs:
           cp README.md dist/windows/
           
           cd dist/windows
-          zip -r "../../${ASSET_NAME}.zip" .
+          zip -r "../../${ASSET_NAME}.zip" *
           echo "WINDOWS_ASSET=${ASSET_NAME}.zip" >> $GITHUB_ENV
 
       # 4. 上传发布
