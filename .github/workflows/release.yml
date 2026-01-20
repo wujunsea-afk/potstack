@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      # 1. 准备构建环境 (PotPacker + 密钥)
+      - name: Setup PotPacker & Key
+        env:
+          RELEASE_KEY: ${{ secrets.POTSTACK_RELEASE_KEY }}
+        run: |
+          # 下载 Linux 版 potpacker
+          wget "https://github.com/wujunsea-afk/potpacker/releases/latest/download/potpacker-x86_64-unknown-linux-musl" -O potpacker
+          chmod +x potpacker
+          
+          # 准备密钥
+          echo "$RELEASE_KEY" > potstack_release.key
+
+      # 2. 构建 Linux 版本
+      - name: Build Linux
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          # 编译二进制
+          go build -o potstack .
+          
+          # 打包 base.zip (Linux 组件)
+          # 输入 1 选择 Linux 平台
+          echo "1" | ./build_base_pack.sh
+          mv potstack-base.zip potstack-base-linux.zip
+          
+          # 归档
+          VERSION=${GITHUB_REF#refs/tags/}
+          ASSET_NAME="potstack-${VERSION}-linux-amd64"
+          mkdir -p dist/linux
+          cp potstack dist/linux/
+          cp potstack-base-linux.zip dist/linux/potstack-base.zip
+          [ -f https.yaml.example ] && cp https.yaml.example dist/linux/
+          cp README.md dist/linux/
+          
+          cd dist/linux
+          tar -czvf "../../${ASSET_NAME}.tar.gz" .
+          echo "LINUX_ASSET=${ASSET_NAME}.tar.gz" >> $GITHUB_ENV
+
+      # 3. 构建 Windows 版本
+      - name: Build Windows
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          # 编译二进制 (隐藏控制台)
+          go build -ldflags="-s -w -H windowsgui" -o potstack.exe .
+          
+          # 打包 base.zip (Windows 组件)
+          # 输入 2 选择 Windows 平台
+          echo "2" | ./build_base_pack.sh
+          mv potstack-base.zip potstack-base-windows.zip
+          
+          # 归档
+          VERSION=${GITHUB_REF#refs/tags/}
+          ASSET_NAME="potstack-${VERSION}-windows-amd64"
+          mkdir -p dist/windows
+          cp potstack.exe dist/windows/
+          cp potstack-base-windows.zip dist/windows/potstack-base.zip
+          cp README.md dist/windows/
+          
+          cd dist/windows
+          zip -r "../../${ASSET_NAME}.zip" .
+          echo "WINDOWS_ASSET=${ASSET_NAME}.zip" >> $GITHUB_ENV
+
+      # 4. 上传发布
+      - name: Upload Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ${{ env.LINUX_ASSET }}
+            ${{ env.WINDOWS_ASSET }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

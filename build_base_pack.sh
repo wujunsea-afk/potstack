@@ -11,12 +11,31 @@ set -e
 
 # 配置
 OUTPUT_DIR="dist"
-PACK_NAME="potstack-base.zip"
 VERSION=$(date +%Y%m%d%H%M%S)
 POTPACKER="./potpacker"
 KEY_NAME="potstack_release"
 
-echo "Building PotStack Base Pack v${VERSION}..."
+# 平台选择
+echo "=========================================="
+echo "  PotStack Base Pack Builder"
+echo "=========================================="
+echo ""
+echo "Select target platform:"
+echo "  1) linux"
+echo "  2) windows"
+echo ""
+read -p "Enter choice [1-2]: " choice
+
+case $choice in
+    1) PLATFORM="linux" ;;
+    2) PLATFORM="windows" ;;
+    *) echo "Invalid choice"; exit 1 ;;
+esac
+
+PACK_NAME="potstack-base.zip"
+
+echo ""
+echo "Building PotStack Base Pack v${VERSION} for ${PLATFORM}..."
 
 # 检查 potpacker 工具
 if [ ! -x "$POTPACKER" ]; then
@@ -39,39 +58,68 @@ fi
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# 遍历 components 目录逐个打包
+# 组件处理函数
+process_item() {
+    local item="$1"
+    if [ -d "$item" ]; then
+        # 目录 → 调用 potpacker 构建
+        local name=$(basename "$item")
+        local output_file="$OUTPUT_DIR/${name}.ppk"
+        
+        # 检查重复
+        if [ -f "$output_file" ]; then
+            echo "Error: Duplicate PPK name: ${name}.ppk"
+            exit 1
+        fi
+        
+        echo "------------------------------------------"
+        echo "Building component: $name"
+        
+        if ! "$POTPACKER" -p "$item" -k "${KEY_NAME}.key" -o "$output_file"; then
+            echo "Error: Failed to pack '$name'"
+            exit 1
+        fi
+        
+        echo "Built: $output_file"
+        FOUND_COUNT=$((FOUND_COUNT + 1))
+    elif [[ "$item" == *.ppk ]]; then
+        # PPK 文件 → 直接复制
+        local filename=$(basename "$item")
+        local output_file="$OUTPUT_DIR/$filename"
+        
+        # 检查重复
+        if [ -f "$output_file" ]; then
+            echo "Error: Duplicate PPK name: $filename"
+            exit 1
+        fi
+        
+        echo "------------------------------------------"
+        echo "Copying PPK: $filename"
+        
+        cp "$item" "$OUTPUT_DIR/"
+        
+        echo "Copied: $output_file"
+        FOUND_COUNT=$((FOUND_COUNT + 1))
+    fi
+}
+
 COMPONENTS_ROOT="components"
 FOUND_COUNT=0
 
-if [ -d "$COMPONENTS_ROOT" ]; then
-    for dir in "$COMPONENTS_ROOT"/*; do
-        if [ -d "$dir" ]; then
-            owner=$(basename "$dir")
-            echo "------------------------------------------"
-            echo "Packing component owner: $owner"
-            
-            # 使用新版命令：单路径扫描打包
-            # -p: 扫描路径 (例如 components/potstack)
-            # -k: 密钥
-            # -o: 输出文件 (例如 dist/potstack.ppk)
-            output_file="$OUTPUT_DIR/${owner}.ppk"
-            
-            if ! "$POTPACKER" -p "$dir" -k "${KEY_NAME}.key" -o "$output_file"; then
-                echo "Error: Failed to pack '$owner'"
-                exit 1
-            fi
-            
-            echo "Packed: $output_file"
-            FOUND_COUNT=$((FOUND_COUNT + 1))
-        fi
+# 处理平台专用目录
+if [ -d "$COMPONENTS_ROOT/$PLATFORM" ]; then
+    echo ""
+    echo "=== Processing $PLATFORM components ==="
+    for item in "$COMPONENTS_ROOT/$PLATFORM"/*; do
+        [ -e "$item" ] && process_item "$item"
     done
 else
-    echo "Error: Components directory '$COMPONENTS_ROOT' not found!"
+    echo "Error: Components directory '$COMPONENTS_ROOT/$PLATFORM' not found!"
     exit 1
 fi
 
 if [ "$FOUND_COUNT" -eq 0 ]; then
-    echo "Error: No components found in '$COMPONENTS_ROOT'!"
+    echo "Error: No components or PPK files found in '$COMPONENTS_ROOT/$PLATFORM'!"
     exit 1
 fi
 

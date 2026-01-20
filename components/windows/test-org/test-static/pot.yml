@@ -1,0 +1,11 @@
+title: "My Sandbox"
+version: "1.0.0"
+owner: "test-org"
+potname: "test-static"
+
+# 沙箱类型：exe 或 static
+type: "static"
+
+# static 类型专用：静态文件根目录（相对于仓库根目录）
+root: "public"
+
